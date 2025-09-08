@@ -1,0 +1,81 @@
+{
+    // Python settings
+    "python.defaultInterpreterPath": "python3",
+    
+    // Format on save
+    "editor.formatOnSave": true,
+    "editor.formatOnType": false,
+    "editor.formatOnPaste": true,
+    
+    // Code actions on save
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": "explicit"
+    },
+    
+    // Line length
+    "editor.rulers": [100],
+    
+    // Python formatting with Black
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+        }
+    },
+    
+    // Black formatter settings
+    "black-formatter.args": [
+        "--line-length=100"
+    ],
+    
+    // Import sorting with isort
+    "isort.args": [
+        "--profile=black",
+        "--line-length=100"
+    ],
+    
+    // Linting configuration
+    "python.linting.enabled": true,
+    "python.linting.lintOnSave": true,
+    
+    // Flake8 configuration
+    "python.linting.flake8Enabled": true,
+    "flake8.args": [
+        "--max-line-length=100",
+        "--ignore=E501,W503,E203"
+    ],
+    
+    // Pylint configuration  
+    "python.linting.pylintEnabled": true,
+    "pylint.args": [
+        "--max-line-length=100",
+        "--disable=C0114,C0115,C0116,R0903,R0913,R0917"
+    ],
+    
+    // MyPy configuration
+    "python.linting.mypyEnabled": true,
+    "mypy-type-checker.args": [
+        "--ignore-missing-imports",
+        "--show-error-codes",
+        "--no-strict-optional"
+    ],
+    
+    // Pylance settings
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.autoFormatStrings": true,
+    
+    // File associations
+    "files.associations": {
+        "*.py": "python"
+    },
+    
+    // Trim whitespace on save
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    
+    // Auto save
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000
+}
