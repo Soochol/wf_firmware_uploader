@@ -1,5 +1,7 @@
 """Main window module."""
 
+from typing import Union
+
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -242,7 +244,7 @@ class MainWindow(QMainWindow):
         """Start upload process."""
         if device_type == "STM32":
             tab = self.stm32_tab
-            uploader = self.stm32_uploader
+            uploader: Union[STM32Uploader, ESP32Uploader] = self.stm32_uploader
         else:
             tab = self.esp32_tab
             uploader = self.esp32_uploader
@@ -287,7 +289,7 @@ class MainWindow(QMainWindow):
         """Erase flash memory."""
         if device_type == "STM32":
             tab = self.stm32_tab
-            uploader = self.stm32_uploader
+            uploader: Union[STM32Uploader, ESP32Uploader] = self.stm32_uploader
         else:
             tab = self.esp32_tab
             uploader = self.esp32_uploader
