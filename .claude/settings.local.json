@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mypy:*)",
+      "Bash(python:*)",
+      "Bash(black:*)",
+      "WebSearch",
+      "Bash(isort:*)",
+      "Bash(uv run:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv pip:*)",
+      "Bash(uv add:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

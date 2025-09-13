@@ -41,7 +41,7 @@ class StatusIndicator(QWidget):
 
         self.indicator = QFrame()
         self.indicator.setFixedSize(12, 12)
-        self.indicator.setFrameStyle(QFrame.Box)
+        self.indicator.setFrameStyle(QFrame.Shape.Box)
         self.set_status("Disconnected")
         layout.addWidget(self.indicator)
 

@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -718,6 +718,16 @@ dev = [
     { name = "types-pyserial" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "black" },
+    { name = "flake8" },
+    { name = "isort" },
+    { name = "mypy" },
+    { name = "pylint" },
+    { name = "types-pyserial" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0.0" },
@@ -731,3 +741,13 @@ requires-dist = [
     { name = "types-pyserial", marker = "extra == 'dev'", specifier = ">=3.4.0" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "black", specifier = ">=25.1.0" },
+    { name = "flake8", specifier = ">=7.3.0" },
+    { name = "isort", specifier = ">=6.0.1" },
+    { name = "mypy", specifier = ">=1.17.1" },
+    { name = "pylint", specifier = ">=3.3.8" },
+    { name = "types-pyserial", specifier = ">=3.5.0.20250822" },
+]

@@ -145,6 +145,8 @@ class STM32Uploader:
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                encoding="utf-8",
+                errors="ignore",  # Ignore encoding errors
             )
 
             while True:
@@ -156,13 +158,34 @@ class STM32Uploader:
                 if output and progress_callback:
                     output = output.strip()
                     if output and not output.startswith("Note:"):
-                        if "Memory Programming" in output:
+                        # Filter out progress bar characters and non-ASCII content
+                        if any(char in output for char in ["█", "▓", "▒", "░"]) or "%" in output:
+                            # Extract percentage if available
+                            try:
+                                if "%" in output:
+                                    percent_pos = output.find("%")
+                                    if percent_pos > 0:
+                                        # Find the percentage number before %
+                                        start = percent_pos - 1
+                                        while start >= 0 and (
+                                            output[start].isdigit() or output[start] == "."
+                                        ):
+                                            start -= 1
+                                        if start < percent_pos - 1:
+                                            percent = output[start + 1 : percent_pos]
+                                            progress_callback(f"Programming... {percent}%")
+                            except:
+                                progress_callback("Programming...")
+                        elif "Memory Programming" in output:
                             progress_callback("Programming flash memory...")
                         elif "Download verified successfully" in output:
                             progress_callback("Verification complete")
                         elif "RUNNING" in output:
                             progress_callback("Firmware uploaded successfully")
-                        else:
+                        elif "Download in Progress" in output:
+                            progress_callback("Starting download...")
+                        elif len(output) > 0 and all(ord(c) < 128 for c in output):
+                            # Only display ASCII-only output
                             progress_callback(output)
 
             return_code = process.wait()
