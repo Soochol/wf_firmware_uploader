@@ -11,3 +11,6 @@ wheels/
 
 # Firmware files
 PSA1.0 펌웨어/
+
+# Windows Zone.Identifier files
+*:Zone.Identifier
