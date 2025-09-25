@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "window": {
+    "x": 38,
+    "y": 87,
+    "width": 900,
+    "height": 963
+  },
+  "ui": {
+    "auto_platform_scale": true,
+    "scale_factor": null
+  },
+  "stm32": {
+    "last_firmware_path": "C:/Users/bless/OneDrive/바탕 화면/PSA1.0 펌웨어/WithForce_1.00.34.hex",
+    "last_port": "SWD",
+    "flash_address": "0x08000000",
+    "full_erase": true,
+    "connection_mode": "HOTPLUG",
+    "hardware_reset": false,
+    "connection_speed": 4000,
+    "retry_attempts": 3
+  },
+  "esp32": {
+    "last_firmware_files": [
+      [
+        "0x1000",
+        "C:/myCodeRepoWindows/wf_firmware_uploader/wf_firmware_uploader/firmwares/esp32/bootloader.bin"
+      ],
+      [
+        "0x10000",
+        "C:/myCodeRepoWindows/wf_firmware_uploader/wf_firmware_uploader/firmwares/esp32/firmware.bin"
+      ],
+      [
+        "0x8000",
+        "C:/myCodeRepoWindows/wf_firmware_uploader/wf_firmware_uploader/firmwares/esp32/partitions.bin"
+      ]
+    ],
+    "last_port": "COM5",
+    "full_erase": true,
+    "upload_method": "auto",
+    "baud_rate": 921600,
+    "before_reset": true,
+    "after_reset": true,
+    "no_sync": false,
+    "connect_attempts": 1
+  }
+}

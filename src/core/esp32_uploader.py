@@ -56,6 +56,8 @@ class ESP32Uploader:
         try:
             if progress_callback:
                 progress_callback(f"Checking ESP32 connection on {port}...")
+                # Send special status message to show RESET button guidance
+                progress_callback("STATUS:PUSH_RESET")
 
             cmd = [sys.executable, "-m", "esptool", "--port", port, "chip_id"]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
@@ -63,6 +65,8 @@ class ESP32Uploader:
             if result.returncode == 0:
                 if progress_callback:
                     progress_callback("ESP32 board detected successfully")
+                    # Send status clear message to restore normal status
+                    progress_callback("STATUS:CLEAR")
                 return True
             else:
                 if progress_callback:
@@ -76,6 +80,8 @@ class ESP32Uploader:
                         )
                     else:
                         progress_callback(f"Error: Failed to detect ESP32 on {port}")
+                    # Send status clear message to restore normal status
+                    progress_callback("STATUS:CLEAR")
                 return False
 
         except subprocess.TimeoutExpired:
@@ -83,10 +89,12 @@ class ESP32Uploader:
                 progress_callback(
                     f"Timeout checking ESP32 connection on {port}. Board may not be connected."
                 )
+                progress_callback("STATUS:CLEAR")
             return False
         except Exception as e:
             if progress_callback:
                 progress_callback(f"Error checking ESP32 connection: {str(e)}")
+                progress_callback("STATUS:CLEAR")
             return False
 
     def is_esptool_available(self) -> bool:
@@ -189,8 +197,15 @@ class ESP32Uploader:
             if not self._check_port_connection(port, progress_callback):
                 return False
             return self._upload_with_auto_control(
-                files_to_upload, port, baud_rate, chip, progress_callback,
-                before_reset, after_reset, no_sync, connect_attempts
+                files_to_upload,
+                port,
+                baud_rate,
+                chip,
+                progress_callback,
+                before_reset,
+                after_reset,
+                no_sync,
+                connect_attempts,
             )
 
     def _upload_with_auto_control(
@@ -476,7 +491,17 @@ class ESP32Uploader:
                 # Use lower baud rate on retry attempts
                 current_baud = baud_rate if attempt == 0 else min(115200, baud_rate)
 
-                cmd = [sys.executable, "-m", "esptool", "--chip", chip, "--port", port, "--baud", str(current_baud)]
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "esptool",
+                    "--chip",
+                    chip,
+                    "--port",
+                    port,
+                    "--baud",
+                    str(current_baud),
+                ]
 
                 # Add before reset option
                 if no_sync:
@@ -522,7 +547,10 @@ class ESP32Uploader:
                         output = output.strip()
                         if output:
                             # Filter out some verbose esptool messages
-                            if not any(skip in output.lower() for skip in ["mac address:", "chip is", "features:"]):
+                            if not any(
+                                skip in output.lower()
+                                for skip in ["mac address:", "chip is", "features:"]
+                            ):
                                 progress_callback(f"Erase: {output}")
 
                 return_code = process.wait()
@@ -534,7 +562,9 @@ class ESP32Uploader:
                 else:
                     if attempt == connect_attempts - 1:  # Last attempt
                         if progress_callback:
-                            progress_callback(f"ESP32 erase failed after {connect_attempts} attempts")
+                            progress_callback(
+                                f"ESP32 erase failed after {connect_attempts} attempts"
+                            )
                     else:
                         if progress_callback:
                             progress_callback(f"Erase attempt {attempt + 1} failed, retrying...")
@@ -547,7 +577,9 @@ class ESP32Uploader:
                     return False
                 else:
                     if progress_callback:
-                        progress_callback(f"Attempt {attempt + 1} timed out, retrying with different settings...")
+                        progress_callback(
+                            f"Attempt {attempt + 1} timed out, retrying with different settings..."
+                        )
                     continue
 
             except Exception as e:
@@ -563,7 +595,9 @@ class ESP32Uploader:
         # If we get here, all attempts failed
         if progress_callback:
             progress_callback("ESP32 erase failed: All connection attempts exhausted")
-            progress_callback("Try: 1) Check board connection 2) Press RESET button 3) Use manual upload mode")
+            progress_callback(
+                "Try: 1) Check board connection 2) Press RESET button 3) Use manual upload mode"
+            )
         return False
 
     def read_flash_info(self, port: str, chip: str = "auto") -> Optional[dict]:

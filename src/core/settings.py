@@ -10,7 +10,9 @@ class SettingsManager:
 
     def __init__(self):
         """Initialize settings manager."""
-        self.config_file = Path.home() / ".wf_firmware_uploader_config.json"
+        # Use project directory config file instead of home directory
+        project_root = Path(__file__).parent.parent.parent  # Go up to project root
+        self.config_file = project_root / ".wf_firmware_uploader_config.json"
         self.settings = self._load_default_settings()
         self.load_settings()
 
@@ -19,6 +21,10 @@ class SettingsManager:
         return {
             "version": "1.0",
             "window": {"x": 100, "y": 100, "width": 1000, "height": 750},
+            "ui": {
+                "auto_platform_scale": True,  # Automatically scale based on platform
+                "scale_factor": None,  # Custom scale factor (overrides auto scaling)
+            },
             "stm32": {
                 "last_firmware_path": "",
                 "last_port": "SWD",
