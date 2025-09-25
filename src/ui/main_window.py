@@ -1,10 +1,11 @@
 """Main window module."""
 
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.esp32_uploader import ESP32Uploader
+from core.serial_boot_controller import SerialBootController
 from core.serial_utils import SerialPortManager
 from core.settings import SettingsManager
 from core.stm32_uploader import STM32Uploader
@@ -127,6 +129,7 @@ class DualUploadWorkerThread(QThread):
 
         def on_upload_finished(device_type, success):
             """Handle individual upload completion."""
+            self.progress_update.emit("DUAL", f"[DEBUG] {device_type} upload finished: {success}")
             self.completed_count += 1
             if device_type == "STM32":
                 self.stm32_success = success
@@ -136,12 +139,17 @@ class DualUploadWorkerThread(QThread):
             self.upload_finished.emit(device_type, success)
 
             # Check if both uploads are completed
+            self.progress_update.emit("DUAL", f"[DEBUG] Completed count: {self.completed_count}/2")
             if self.completed_count >= 2:
                 overall_success = self.stm32_success and self.esp32_success
+                self.progress_update.emit("DUAL", f"[DEBUG] Both uploads complete. Overall success: {overall_success}")
                 self.dual_finished.emit(overall_success)
 
         try:
+            self.progress_update.emit("DUAL", "[DEBUG] Starting dual upload process...")
+
             # Start STM32 upload in separate thread
+            self.progress_update.emit("DUAL", "[DEBUG] Creating STM32 upload thread...")
             self.stm32_thread = UploadWorkerThread(
                 "STM32", self.stm32_uploader, **self.stm32_kwargs
             )
@@ -153,6 +161,7 @@ class DualUploadWorkerThread(QThread):
             )
 
             # Start ESP32 upload in separate thread
+            self.progress_update.emit("DUAL", "[DEBUG] Creating ESP32 upload thread...")
             self.esp32_thread = UploadWorkerThread(
                 "ESP32", self.esp32_uploader, **self.esp32_kwargs
             )
@@ -164,31 +173,24 @@ class DualUploadWorkerThread(QThread):
             )
 
             # Start both uploads
+            self.progress_update.emit("DUAL", "[DEBUG] Starting both upload threads...")
             self.stm32_thread.start()
             self.esp32_thread.start()
+            self.progress_update.emit("DUAL", "[DEBUG] Both threads started successfully")
 
-            # Wait for both to complete with timeout
-            stm32_finished = self.stm32_thread.wait(60000)  # 60 second timeout
-            esp32_finished = self.esp32_thread.wait(60000)  # 60 second timeout
-
-            # Force finish if threads didn't complete
-            if not stm32_finished:
-                self.stm32_thread.terminate()
-                if self.completed_count < 2:
-                    on_upload_finished("STM32", False)
-
-            if not esp32_finished:
-                self.esp32_thread.terminate()
-                if self.completed_count < 2:
-                    on_upload_finished("ESP32", False)
+            # Note: Removed wait() calls to prevent UI blocking
+            # Completion is handled through signals in on_upload_finished()
 
         except Exception as e:
             # Clean up threads on exception
+            self.progress_update.emit("DUAL", f"[DEBUG] Exception in dual upload: {str(e)}")
             if hasattr(self, "stm32_thread"):
                 self.stm32_thread.terminate()
+                self.progress_update.emit("DUAL", "[DEBUG] STM32 thread terminated")
             if hasattr(self, "esp32_thread"):
                 self.esp32_thread.terminate()
-            self.progress_update.emit("BOTH", f"Dual upload error: {str(e)}")
+                self.progress_update.emit("DUAL", "[DEBUG] ESP32 thread terminated")
+            self.progress_update.emit("DUAL", f"Dual upload error: {str(e)}")
             self.dual_finished.emit(False)
 
 
@@ -207,6 +209,13 @@ class DeviceTab(QWidget):
 
     def init_ui(self):
         """Initialize UI."""
+        # Set 10pt font for all widgets in device tab
+        self.setStyleSheet("""
+            QLabel, QPushButton, QRadioButton, QCheckBox, QGroupBox, QComboBox, QLineEdit {
+                font-size: 10pt;
+            }
+        """)
+
         layout = QVBoxLayout(self)
 
         # File selection group
@@ -241,13 +250,38 @@ class DeviceTab(QWidget):
         self.full_erase_checkbox.setToolTip("Erase entire flash memory before uploading firmware")
         layout.addWidget(self.full_erase_checkbox)
 
+        # STM32-specific Advanced Connection Settings
+        if self.device_type == "STM32":
+            self.init_stm32_advanced_settings(layout)
+
         # Upload controls
         upload_layout = QHBoxLayout()
 
         self.upload_btn = QPushButton(f"Upload {self.device_type}")
+        self.upload_btn.setMinimumHeight(60)
+        self.upload_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                font-size: 12pt;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
         upload_layout.addWidget(self.upload_btn)
 
         self.erase_btn = QPushButton("Erase Flash")
+        self.erase_btn.setMinimumHeight(60)
         upload_layout.addWidget(self.erase_btn)
 
         layout.addLayout(upload_layout)
@@ -357,6 +391,9 @@ class DeviceTab(QWidget):
             full_erase = self.settings_manager.get_stm32_full_erase()
             self.full_erase_checkbox.setChecked(full_erase)
 
+            # Load STM32 advanced settings
+            self.load_stm32_advanced_settings()
+
     def save_settings(self):
         """Save current settings for this device type."""
         if not self.settings_manager:
@@ -375,6 +412,169 @@ class DeviceTab(QWidget):
             # Save full erase setting
             self.settings_manager.set_stm32_full_erase(self.is_full_erase_enabled())
 
+            # Save STM32 advanced settings
+            self.save_stm32_advanced_settings()
+
+    def init_stm32_advanced_settings(self, layout):
+        """Initialize STM32-specific advanced connection settings."""
+        advanced_group = QGroupBox("Advanced Connection Settings")
+        advanced_layout = QVBoxLayout(advanced_group)
+
+        # Connection Mode
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Connection Mode:"))
+
+        self.connection_mode_group = QButtonGroup(self)
+
+        self.hotplug_radio = QRadioButton("HOTPLUG")
+        self.hotplug_radio.setChecked(True)  # Default
+        self.hotplug_radio.toggled.connect(self.on_settings_changed)
+        self.connection_mode_group.addButton(self.hotplug_radio, 0)
+        mode_layout.addWidget(self.hotplug_radio)
+
+        self.ur_radio = QRadioButton("Under Reset")
+        self.ur_radio.toggled.connect(self.on_settings_changed)
+        self.connection_mode_group.addButton(self.ur_radio, 1)
+        mode_layout.addWidget(self.ur_radio)
+
+        self.normal_radio = QRadioButton("Normal")
+        self.normal_radio.toggled.connect(self.on_settings_changed)
+        self.connection_mode_group.addButton(self.normal_radio, 2)
+        mode_layout.addWidget(self.normal_radio)
+
+        mode_layout.addStretch()
+        advanced_layout.addLayout(mode_layout)
+
+        # Hardware Reset checkbox
+        self.hardware_reset_checkbox = QCheckBox("Hardware Reset")
+        self.hardware_reset_checkbox.setToolTip("Enable hardware reset during connection")
+        self.hardware_reset_checkbox.toggled.connect(self.on_settings_changed)
+        advanced_layout.addWidget(self.hardware_reset_checkbox)
+
+        # Connection Speed and Retry Attempts
+        speed_retry_layout = QHBoxLayout()
+
+        # Connection Speed
+        speed_retry_layout.addWidget(QLabel("Speed:"))
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["1000 kHz", "4000 kHz", "8000 kHz"])
+        self.speed_combo.setCurrentText("4000 kHz")  # Default
+        self.speed_combo.currentTextChanged.connect(self.on_settings_changed)
+        speed_retry_layout.addWidget(self.speed_combo)
+
+        speed_retry_layout.addWidget(QLabel("Retry:"))
+        self.retry_combo = QComboBox()
+        self.retry_combo.addItems(["1", "3", "5", "10"])
+        self.retry_combo.setCurrentText("3")  # Default
+        self.retry_combo.currentTextChanged.connect(self.on_settings_changed)
+        speed_retry_layout.addWidget(self.retry_combo)
+
+        speed_retry_layout.addStretch()
+        advanced_layout.addLayout(speed_retry_layout)
+
+        layout.addWidget(advanced_group)
+
+    def on_settings_changed(self):
+        """Handle settings change for auto-save."""
+        # Auto-save STM32 settings when changed
+        if self.device_type == "STM32" and self.settings_manager:
+            self.save_stm32_advanced_settings()
+
+    def save_stm32_advanced_settings(self):
+        """Save STM32 advanced connection settings."""
+        if not self.settings_manager:
+            return
+
+        # Save connection mode
+        if hasattr(self, 'hotplug_radio') and self.hotplug_radio.isChecked():
+            self.settings_manager.set_stm32_connection_mode("HOTPLUG")
+        elif hasattr(self, 'ur_radio') and self.ur_radio.isChecked():
+            self.settings_manager.set_stm32_connection_mode("UR")
+        elif hasattr(self, 'normal_radio') and self.normal_radio.isChecked():
+            self.settings_manager.set_stm32_connection_mode("Normal")
+
+        # Save hardware reset
+        if hasattr(self, 'hardware_reset_checkbox'):
+            self.settings_manager.set_stm32_hardware_reset(self.hardware_reset_checkbox.isChecked())
+
+        # Save connection speed
+        if hasattr(self, 'speed_combo'):
+            speed_text = self.speed_combo.currentText()
+            speed = int(speed_text.split()[0])  # Extract number from "4000 kHz"
+            self.settings_manager.set_stm32_connection_speed(speed)
+
+        # Save retry attempts
+        if hasattr(self, 'retry_combo'):
+            retry = int(self.retry_combo.currentText())
+            self.settings_manager.set_stm32_retry_attempts(retry)
+
+    def load_stm32_advanced_settings(self):
+        """Load STM32 advanced connection settings."""
+        if not self.settings_manager or self.device_type != "STM32":
+            return
+
+        # Load connection mode
+        mode = self.settings_manager.get_stm32_connection_mode()
+        if hasattr(self, 'hotplug_radio'):
+            if mode == "HOTPLUG":
+                self.hotplug_radio.setChecked(True)
+            elif mode == "UR":
+                self.ur_radio.setChecked(True)
+            elif mode == "Normal":
+                self.normal_radio.setChecked(True)
+
+        # Load hardware reset
+        if hasattr(self, 'hardware_reset_checkbox'):
+            hardware_reset = self.settings_manager.get_stm32_hardware_reset()
+            self.hardware_reset_checkbox.setChecked(hardware_reset)
+
+        # Load connection speed
+        if hasattr(self, 'speed_combo'):
+            speed = self.settings_manager.get_stm32_connection_speed()
+            speed_text = f"{speed} kHz"
+            index = self.speed_combo.findText(speed_text)
+            if index >= 0:
+                self.speed_combo.setCurrentIndex(index)
+
+        # Load retry attempts
+        if hasattr(self, 'retry_combo'):
+            retry = self.settings_manager.get_stm32_retry_attempts()
+            retry_text = str(retry)
+            index = self.retry_combo.findText(retry_text)
+            if index >= 0:
+                self.retry_combo.setCurrentIndex(index)
+
+    def get_stm32_connection_settings(self):
+        """Get STM32 connection settings for upload."""
+        if self.device_type != "STM32":
+            return {}
+
+        settings = {}
+
+        # Connection mode
+        if hasattr(self, 'hotplug_radio'):
+            if self.hotplug_radio.isChecked():
+                settings["connection_mode"] = "HOTPLUG"
+            elif self.ur_radio.isChecked():
+                settings["connection_mode"] = "UR"
+            elif self.normal_radio.isChecked():
+                settings["connection_mode"] = "Normal"
+
+        # Hardware reset
+        if hasattr(self, 'hardware_reset_checkbox'):
+            settings["hardware_reset"] = self.hardware_reset_checkbox.isChecked()
+
+        # Connection speed
+        if hasattr(self, 'speed_combo'):
+            speed_text = self.speed_combo.currentText()
+            settings["connection_speed"] = int(speed_text.split()[0])
+
+        # Retry attempts
+        if hasattr(self, 'retry_combo'):
+            settings["retry_attempts"] = int(self.retry_combo.currentText())
+
+        return settings
+
 
 class ESP32Tab(QWidget):
     """ESP32-specific tab with multi-file support."""
@@ -389,6 +589,13 @@ class ESP32Tab(QWidget):
 
     def init_ui(self):
         """Initialize UI."""
+        # Set 12pt font for all widgets in ESP32 tab
+        self.setStyleSheet("""
+            QLabel, QPushButton, QRadioButton, QCheckBox, QGroupBox, QComboBox {
+                font-size: 12pt;
+            }
+        """)
+
         layout = QVBoxLayout(self)
 
         # Multi-file selection group
@@ -398,6 +605,8 @@ class ESP32Tab(QWidget):
         # File list
         self.file_list = QListWidget()
         self.file_list.setMaximumHeight(150)
+        # Increase font size for firmware file list
+        self.file_list.setStyleSheet("QListWidget { font-size: 11pt; }")
         file_layout.addWidget(QLabel("Files to upload:"))
         file_layout.addWidget(self.file_list)
 
@@ -503,16 +712,113 @@ class ESP32Tab(QWidget):
         self.full_erase_checkbox.setToolTip("Erase entire flash memory before uploading firmware")
         layout.addWidget(self.full_erase_checkbox)
 
+        # Advanced settings group
+        advanced_group = QGroupBox("Advanced Settings")
+        advanced_layout = QVBoxLayout(advanced_group)
+
+        # Baud rate selection
+        baud_layout = QHBoxLayout()
+        baud_layout.addWidget(QLabel("Baud Rate:"))
+
+        self.baud_combo = QComboBox()
+        self.baud_combo.addItems(["115200", "230400", "460800", "921600"])
+        self.baud_combo.setCurrentText("921600")
+        self.baud_combo.currentTextChanged.connect(self.on_settings_changed)
+        baud_layout.addWidget(self.baud_combo)
+        baud_layout.addStretch()
+        advanced_layout.addLayout(baud_layout)
+
+        # Connection options
+        connection_label = QLabel("Connection Options:")
+        connection_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        advanced_layout.addWidget(connection_label)
+
+        self.before_reset_checkbox = QCheckBox("Reset before connection (--before default-reset)")
+        self.before_reset_checkbox.setChecked(True)
+        self.before_reset_checkbox.toggled.connect(self.on_settings_changed)
+        advanced_layout.addWidget(self.before_reset_checkbox)
+
+        self.after_reset_checkbox = QCheckBox("Reset after upload (--after hard-reset)")
+        self.after_reset_checkbox.setChecked(True)
+        self.after_reset_checkbox.toggled.connect(self.on_settings_changed)
+        advanced_layout.addWidget(self.after_reset_checkbox)
+
+        self.no_sync_checkbox = QCheckBox("Use no-sync mode (--before no-reset-no-sync)")
+        self.no_sync_checkbox.setChecked(False)
+        self.no_sync_checkbox.toggled.connect(self.on_no_sync_changed)
+        self.no_sync_checkbox.toggled.connect(self.on_settings_changed)
+        advanced_layout.addWidget(self.no_sync_checkbox)
+
+        # Connect attempts
+        attempts_layout = QHBoxLayout()
+        attempts_layout.addWidget(QLabel("Connection Attempts:"))
+
+        self.connect_attempts_combo = QComboBox()
+        self.connect_attempts_combo.addItems(["1", "3", "5", "10"])
+        self.connect_attempts_combo.setCurrentText("1")
+        self.connect_attempts_combo.currentTextChanged.connect(self.on_settings_changed)
+        attempts_layout.addWidget(self.connect_attempts_combo)
+        attempts_layout.addStretch()
+        advanced_layout.addLayout(attempts_layout)
+
+        layout.addWidget(advanced_group)
+
         # Upload controls
         upload_layout = QHBoxLayout()
 
         self.upload_btn = QPushButton("Upload ESP32")
+        self.upload_btn.setMinimumHeight(60)
+        self.upload_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                font-size: 12pt;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
         upload_layout.addWidget(self.upload_btn)
 
         self.erase_btn = QPushButton("Erase Flash")
+        self.erase_btn.setMinimumHeight(60)
         upload_layout.addWidget(self.erase_btn)
 
         layout.addLayout(upload_layout)
+
+        # Reset guidance label
+        self.reset_guidance_label = QLabel("💡 Press ESP32 RESET button now")
+        self.reset_guidance_label.setVisible(False)
+
+        # Set font for better visibility
+        guidance_font = QFont()
+        guidance_font.setBold(True)
+        guidance_font.setPointSize(10)
+        self.reset_guidance_label.setFont(guidance_font)
+
+        self.reset_guidance_label.setStyleSheet("""
+            QLabel {
+                background-color: #ff5722;
+                color: white;
+                padding: 10px;
+                border-radius: 6px;
+                border: 3px solid #d32f2f;
+                font-size: 14px;
+                font-weight: bold;
+                box-shadow: 0px 2px 4px rgba(0,0,0,0.3);
+            }
+        """)
+        self.reset_guidance_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.reset_guidance_label)
 
         # Progress
         self.progress_bar = QProgressBar()
@@ -551,15 +857,14 @@ class ESP32Tab(QWidget):
         # Common ESP32 file patterns
         if "bootloader" in filename:
             return "0x1000"
-        elif "partition" in filename or "partitions" in filename:
+        if "partition" in filename or "partitions" in filename:
             return "0x8000"
-        elif "ota_data" in filename:
+        if "ota_data" in filename:
             return "0xd000"
-        elif any(name in filename for name in ["app", "firmware", "main"]):
+        if any(name in filename for name in ["app", "firmware", "main"]):
             return "0x10000"
-        else:
-            # Default to application area
-            return "0x10000"
+        # Default to application area
+        return "0x10000"
 
     def setup_single_app(self):
         """Quick setup for single application file."""
@@ -726,6 +1031,22 @@ class ESP32Tab(QWidget):
             self.auto_method_radio.setChecked(True)
         self.on_upload_method_changed(self.manual_method_radio.isChecked())
 
+        # Load advanced settings
+        baud_rate = self.settings_manager.get_esp32_baud_rate()
+        self.baud_combo.setCurrentText(str(baud_rate))
+
+        before_reset = self.settings_manager.get_esp32_before_reset()
+        self.before_reset_checkbox.setChecked(before_reset)
+
+        after_reset = self.settings_manager.get_esp32_after_reset()
+        self.after_reset_checkbox.setChecked(after_reset)
+
+        no_sync = self.settings_manager.get_esp32_no_sync()
+        self.no_sync_checkbox.setChecked(no_sync)
+
+        connect_attempts = self.settings_manager.get_esp32_connect_attempts()
+        self.connect_attempts_combo.setCurrentText(str(connect_attempts))
+
     def save_settings(self):
         """Save current settings for ESP32."""
         if not self.settings_manager:
@@ -746,6 +1067,15 @@ class ESP32Tab(QWidget):
         # Save upload method setting
         self.settings_manager.set_esp32_upload_method(self.get_upload_method())
 
+        # Save advanced settings
+        self.settings_manager.set_esp32_baud_rate(int(self.baud_combo.currentText()))
+        self.settings_manager.set_esp32_before_reset(self.before_reset_checkbox.isChecked())
+        self.settings_manager.set_esp32_after_reset(self.after_reset_checkbox.isChecked())
+        self.settings_manager.set_esp32_no_sync(self.no_sync_checkbox.isChecked())
+        self.settings_manager.set_esp32_connect_attempts(
+            int(self.connect_attempts_combo.currentText())
+        )
+
     def get_upload_method(self) -> str:
         """Get selected upload method.
 
@@ -754,13 +1084,12 @@ class ESP32Tab(QWidget):
         """
         return "manual" if self.manual_method_radio.isChecked() else "auto"
 
-    def on_upload_method_changed(self, checked: bool):
+    def on_upload_method_changed(self, _checked: bool):
         """Handle upload method radio button change."""
         self.manual_control_widget.setVisible(self.manual_method_radio.isChecked())
 
     def test_manual_control(self):
         """Test manual DTR/RTS control."""
-        from core.serial_boot_controller import SerialBootController
 
         port = self.get_selected_port()
         if not port:
@@ -805,6 +1134,40 @@ class ESP32Tab(QWidget):
         except Exception as e:
             show_result("Test Error", f"Error testing control signals: {str(e)}", False)
 
+    def on_settings_changed(self):
+        """Handle settings change - auto-save settings."""
+        self.save_settings()
+        if self.settings_manager:
+            self.settings_manager.save_settings()
+
+    def on_no_sync_changed(self, checked: bool):
+        """Handle no-sync checkbox change."""
+        if checked:
+            # When no-sync is enabled, disable before_reset
+            self.before_reset_checkbox.setChecked(False)
+            self.before_reset_checkbox.setEnabled(False)
+        else:
+            # When no-sync is disabled, re-enable before_reset
+            self.before_reset_checkbox.setEnabled(True)
+
+    def get_connection_settings(self) -> dict:
+        """Get current connection settings."""
+        return {
+            "baud_rate": int(self.baud_combo.currentText()),
+            "before_reset": self.before_reset_checkbox.isChecked(),
+            "after_reset": self.after_reset_checkbox.isChecked(),
+            "no_sync": self.no_sync_checkbox.isChecked(),
+            "connect_attempts": int(self.connect_attempts_combo.currentText()),
+        }
+
+    def show_reset_guidance(self):
+        """Show reset button guidance label."""
+        self.reset_guidance_label.setVisible(True)
+
+    def hide_reset_guidance(self):
+        """Hide reset button guidance label."""
+        self.reset_guidance_label.setVisible(False)
+
 
 class DualUploadTab(QWidget):
     """Dual upload tab for uploading both STM32 and ESP32 simultaneously."""
@@ -819,6 +1182,13 @@ class DualUploadTab(QWidget):
 
     def init_ui(self):
         """Initialize UI."""
+        # Set 12pt font for all widgets in dual upload tab
+        self.setStyleSheet("""
+            QLabel, QPushButton, QRadioButton, QCheckBox, QGroupBox, QComboBox, QProgressBar {
+                font-size: 12pt;
+            }
+        """)
+
         layout = QVBoxLayout(self)
 
         # Settings summary section
@@ -859,7 +1229,7 @@ class DualUploadTab(QWidget):
 
         # Main upload button
         self.upload_both_btn = QPushButton("🚀 Upload Both Devices")
-        self.upload_both_btn.setMinimumHeight(50)
+        self.upload_both_btn.setMinimumHeight(100)
         self.upload_both_btn.setStyleSheet(
             """
             QPushButton {
@@ -887,7 +1257,48 @@ class DualUploadTab(QWidget):
         # Individual upload buttons
         individual_layout = QHBoxLayout()
         self.upload_stm32_btn = QPushButton("Upload STM32 Only")
+        self.upload_stm32_btn.setMinimumHeight(60)
+        self.upload_stm32_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                font-size: 12pt;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+
         self.upload_esp32_btn = QPushButton("Upload ESP32 Only")
+        self.upload_esp32_btn.setMinimumHeight(60)
+        self.upload_esp32_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                font-size: 12pt;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
         individual_layout.addWidget(self.upload_stm32_btn)
         individual_layout.addWidget(self.upload_esp32_btn)
         controls_layout.addLayout(individual_layout)
@@ -960,11 +1371,13 @@ class DualUploadTab(QWidget):
         while parent and not hasattr(parent, "tab_widget"):
             parent = parent.parent()
         if parent and hasattr(parent, "tab_widget"):
-            if hasattr(parent, "stm32_tab") and hasattr(parent, "esp32_tab"):
+            # Type cast to MainWindow to access specific attributes
+            main_window = cast("MainWindow", parent)
+            if hasattr(main_window, "stm32_tab") and hasattr(main_window, "esp32_tab"):
                 if tab_name == "STM32":
-                    parent.tab_widget.setCurrentWidget(parent.stm32_tab)
+                    main_window.tab_widget.setCurrentWidget(main_window.stm32_tab)
                 elif tab_name == "ESP32":
-                    parent.tab_widget.setCurrentWidget(parent.esp32_tab)
+                    main_window.tab_widget.setCurrentWidget(main_window.esp32_tab)
 
     def update_settings_summary(self):
         """Update the settings summary display."""
@@ -1053,7 +1466,9 @@ class DualUploadTab(QWidget):
         while parent and not hasattr(parent, "cancel_dual_upload"):
             parent = parent.parent()
         if parent and hasattr(parent, "cancel_dual_upload"):
-            parent.cancel_dual_upload()
+            # Type cast to MainWindow to access cancel_dual_upload method
+            main_window = cast("MainWindow", parent)
+            main_window.cancel_dual_upload()
 
 
 class MainWindow(QMainWindow):
@@ -1072,7 +1487,7 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         """Initialize UI."""
         self.setWindowTitle("WF Firmware Uploader")
-        self.setGeometry(100, 100, 800, 600)
+        self.setMinimumSize(900, 600)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -1081,9 +1496,25 @@ class MainWindow(QMainWindow):
 
         # Tab widget
         self.tab_widget = QTabWidget()
+        # Apply 12pt font to tab names
+        self.tab_widget.setStyleSheet("""
+            QTabWidget::tab-bar {
+                font-size: 12pt;
+            }
+            QTabBar::tab {
+                font-size: 12pt;
+                padding: 8px 16px;
+            }
+        """)
 
         # STM32 tab
         self.stm32_tab = DeviceTab("STM32", "Binary Files (*.bin *.hex)", self.settings_manager)
+        # Apply 12pt font only to STM32 tab
+        self.stm32_tab.setStyleSheet("""
+            QLabel, QPushButton, QRadioButton, QCheckBox, QGroupBox, QComboBox, QLineEdit {
+                font-size: 12pt;
+            }
+        """)
         self.stm32_tab.upload_btn.clicked.connect(lambda: self.start_upload("STM32"))
         self.stm32_tab.erase_btn.clicked.connect(lambda: self.erase_flash("STM32"))
         self.tab_widget.addTab(self.stm32_tab, "STM32")
@@ -1109,24 +1540,28 @@ class MainWindow(QMainWindow):
 
         # Log viewer
         log_group = QGroupBox("Log")
+        # Apply 12pt font to log group title
+        log_group.setStyleSheet("QGroupBox { font-size: 12pt; }")
         log_layout = QVBoxLayout(log_group)
 
         log_controls = QHBoxLayout()
         clear_btn = QPushButton("Clear Log")
+        clear_btn.setStyleSheet("QPushButton { font-size: 12pt; }")
         clear_btn.clicked.connect(self.clear_log)
         log_controls.addWidget(clear_btn)
 
         log_controls.addStretch()
 
         save_btn = QPushButton("Save Log")
+        save_btn.setStyleSheet("QPushButton { font-size: 12pt; }")
         save_btn.clicked.connect(self.save_log)
         log_controls.addWidget(save_btn)
 
         log_layout.addLayout(log_controls)
 
         self.log_text = QTextEdit()
-        self.log_text.setMaximumHeight(200)
-        self.log_text.setFont(QFont("Courier", 9))
+        self.log_text.setMinimumHeight(100)  # 최소 높이만 설정
+        self.log_text.setFont(QFont("Courier", 12))
         self.log_text.setReadOnly(True)
         log_layout.addWidget(self.log_text)
 
@@ -1134,6 +1569,8 @@ class MainWindow(QMainWindow):
 
     def start_upload(self, device_type: str):
         """Start upload process."""
+        kwargs: dict[str, Any] = {}
+
         if device_type == "STM32":
             tab = self.stm32_tab
             uploader: Union[STM32Uploader, ESP32Uploader] = self.stm32_uploader
@@ -1150,11 +1587,16 @@ class MainWindow(QMainWindow):
                 msg.exec()
                 return
 
-            kwargs = {"firmware_path": file_path, "port": tab.get_selected_port()}
+            # Get STM32 connection settings
+            stm32_connection_settings = tab.get_stm32_connection_settings()
+            kwargs.update({
+                "firmware_path": file_path,
+                "port": tab.get_selected_port(),
+                **stm32_connection_settings
+            })
 
         else:  # ESP32
             esp32_tab = self.esp32_tab
-            tab = esp32_tab  # Keep tab for common code below
             uploader = self.esp32_uploader
 
             firmware_files = esp32_tab.get_firmware_files()
@@ -1169,13 +1611,22 @@ class MainWindow(QMainWindow):
                 msg.exec()
                 return
 
-            kwargs = {
-                "firmware_files": firmware_files,
-                "port": esp32_tab.get_selected_port(),
-                "upload_method": esp32_tab.get_upload_method(),
-            }
+            # Get connection settings
+            connection_settings = esp32_tab.get_connection_settings()
 
-        port = tab.get_selected_port()
+            kwargs.update(
+                {
+                    "firmware_files": firmware_files,
+                    "port": esp32_tab.get_selected_port(),
+                    "upload_method": esp32_tab.get_upload_method(),
+                    **connection_settings,
+                }
+            )
+
+        if device_type == "ESP32":
+            port = esp32_tab.get_selected_port()
+        else:
+            port = tab.get_selected_port()
         if not port:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Icon.Warning)
@@ -1188,7 +1639,8 @@ class MainWindow(QMainWindow):
             return
 
         # Check if full erase is requested
-        full_erase = tab.is_full_erase_enabled()
+        current_tab = esp32_tab if device_type == "ESP32" else tab
+        full_erase = current_tab.is_full_erase_enabled()
 
         # Start upload in thread
         thread = UploadWorkerThread(device_type, uploader, full_erase=full_erase, **kwargs)
@@ -1196,12 +1648,12 @@ class MainWindow(QMainWindow):
         thread.upload_finished.connect(self.on_upload_finished)
 
         self.upload_threads[device_type] = thread
-        tab.start_progress()
+        current_tab.start_progress()
 
         if full_erase:
-            tab.update_status("Erasing and uploading...")
+            current_tab.update_status("Erasing and uploading...")
         else:
-            tab.update_status("Uploading...")
+            current_tab.update_status("Uploading...")
 
         thread.start()
 
@@ -1234,11 +1686,13 @@ class MainWindow(QMainWindow):
         }
 
         # Prepare ESP32 kwargs
+        connection_settings = self.esp32_tab.get_connection_settings()
         esp32_kwargs = {
             "firmware_files": esp32_files,
             "port": esp32_port,
             "full_erase": self.esp32_tab.is_full_erase_enabled(),
             "upload_method": self.esp32_tab.get_upload_method(),
+            **connection_settings,
         }
 
         # Start dual upload thread
@@ -1331,12 +1785,11 @@ class MainWindow(QMainWindow):
         if device_type == "STM32":
             tab = self.stm32_tab
             uploader: Union[STM32Uploader, ESP32Uploader] = self.stm32_uploader
+            port = tab.get_selected_port()
         else:
             esp32_tab = self.esp32_tab
-            tab = esp32_tab  # Keep tab for common code below
             uploader = self.esp32_uploader
-
-        port = tab.get_selected_port()
+            port = esp32_tab.get_selected_port()
         if not port:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Icon.Warning)
@@ -1349,41 +1802,127 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            tab.update_status("Erasing...")
-            success = uploader.erase_flash(
-                port, progress_callback=lambda msg: self.append_log(msg, device_type)
-            )
-            if success:
-                tab.update_status("Erase completed")
-                self.append_log("Flash erase completed", device_type)
+            if device_type == "STM32":
+                tab.update_status("Erasing...")
+
+                # Log detailed STM32 erase start information
+                self.append_log("Starting flash erase...", device_type)
+
+                # Get and log STM32 connection settings
+                stm32_settings = tab.get_stm32_connection_settings()
+                connection_mode = stm32_settings.get("connection_mode", "HOTPLUG")
+                hardware_reset = stm32_settings.get("hardware_reset", False)
+                connection_speed = stm32_settings.get("connection_speed", 4000)
+                retry_attempts = stm32_settings.get("retry_attempts", 3)
+
+                self.append_log(f"Erasing STM32 flash on port {port}...", device_type)
+                self.append_log(f"Connection mode: {connection_mode}, Speed: {connection_speed}kHz", device_type)
+                self.append_log(f"Hardware reset: {'enabled' if hardware_reset else 'disabled'}", device_type)
+                self.append_log(f"Retry attempts: {retry_attempts}", device_type)
+
+                success = uploader.erase_flash(
+                    port, progress_callback=lambda msg: self.append_log(msg, device_type)
+                )
+                if success:
+                    tab.update_status("Erase completed")
+                    self.append_log("Flash erase completed", device_type)
+                else:
+                    tab.update_status("Erase failed")
+                    self.append_log("Flash erase failed", device_type)
             else:
-                tab.update_status("Erase failed")
-                self.append_log("Flash erase failed", device_type)
+                esp32_tab.update_status("Erasing...")
+
+                # Log detailed ESP32 erase start information
+                self.append_log("Starting flash erase...", device_type)
+
+                # Get and log ESP32 connection settings
+                connection_settings = esp32_tab.get_connection_settings()
+                baud_rate = connection_settings.get("baud_rate", 921600)
+                before_reset = "default-reset" if connection_settings.get("before_reset", True) else "no-reset"
+                after_reset = "hard-reset" if connection_settings.get("after_reset", True) else "no-reset"
+                connect_attempts = connection_settings.get("connect_attempts", 1)
+
+                self.append_log(f"Erasing ESP32 flash on port {port}...", device_type)
+                self.append_log(f"Connection settings: Baud={baud_rate}, Before={before_reset}, After={after_reset}", device_type)
+                self.append_log(f"Connection attempts: {connect_attempts}", device_type)
+                self.append_log("Note: This may take a while depending on flash size", device_type)
+
+                success = uploader.erase_flash(
+                    port,
+                    progress_callback=lambda msg: self._handle_esp32_progress(msg, device_type),
+                    **connection_settings,
+                )
+                if success:
+                    esp32_tab.update_status("Erase completed")
+                    self.append_log("Flash erase completed", device_type)
+                else:
+                    esp32_tab.update_status("Erase failed")
+                    self.append_log("Flash erase failed", device_type)
         except Exception as e:
-            tab.update_status("Erase error")
+            if device_type == "STM32":
+                tab.update_status("Erase error")
+            else:
+                esp32_tab.update_status("Erase error")
             self.append_log(f"Erase error: {str(e)}", device_type)
+
+    def _handle_esp32_progress(self, message: str, device_type: str):
+        """Handle ESP32 progress updates with smart reset guidance."""
+        # Show reset guidance when checking connection
+        if "Checking ESP32 connection" in message:
+            if device_type == "ESP32":
+                # Force hide first, then show to ensure visibility
+                self.esp32_tab.hide_reset_guidance()
+                self.esp32_tab.show_reset_guidance()
+
+        # Hide reset guidance on successful connection
+        elif any(keyword in message for keyword in [
+            "Connected to ESP32", "Chip detected", "Detecting chip type", "Chip type:",
+            "Stub flasher is already running", "Changed.", "Writing at"
+        ]):
+            if device_type == "ESP32":
+                self.esp32_tab.hide_reset_guidance()
+
+        # Also hide on completion messages
+        elif any(keyword in message for keyword in [
+            "completed successfully", "Hash of data verified", "Hard resetting"
+        ]):
+            if device_type == "ESP32":
+                self.esp32_tab.hide_reset_guidance()
+
+        # Always log the message
+        self.append_log(message, device_type)
 
     def on_progress_update(self, device_type: str, message: str):
         """Handle progress updates."""
-        self.append_log(message, device_type)
+        if device_type == "ESP32":
+            self._handle_esp32_progress(message, device_type)
+        else:
+            self.append_log(message, device_type)
 
     def on_upload_finished(self, device_type: str, success: bool):
         """Handle upload completion."""
         if device_type == "STM32":
             tab = self.stm32_tab
+            tab.finish_progress(success)
         else:
             esp32_tab = self.esp32_tab
-            tab = esp32_tab  # Keep tab for common code below
-
-        tab.finish_progress(success)
+            esp32_tab.finish_progress(success)
+            # Always hide reset guidance when ESP32 upload finishes
+            esp32_tab.hide_reset_guidance()
         if success:
-            tab.update_status("Upload completed")
+            if device_type == "STM32":
+                tab.update_status("Upload completed")
+                tab.save_settings()
+            else:
+                esp32_tab.update_status("Upload completed")
+                esp32_tab.save_settings()
             self.append_log("Upload completed successfully", device_type)
-            # Save settings on successful upload
-            tab.save_settings()
             self.settings_manager.save_settings()
         else:
-            tab.update_status("Upload failed")
+            if device_type == "STM32":
+                tab.update_status("Upload failed")
+            else:
+                esp32_tab.update_status("Upload failed")
             self.append_log("Upload failed", device_type)
 
         # Clean up thread
@@ -1392,12 +1931,21 @@ class MainWindow(QMainWindow):
 
     def append_log(self, message: str, device_type: str = ""):
         """Add message to log."""
+        # Get current time
+        current_time = datetime.now().strftime("%H:%M:%S")
+
         if device_type:
-            formatted_msg = f"[{device_type}] {message}"
+            formatted_msg = f"[{current_time}] [{device_type}] {message}"
         else:
-            formatted_msg = message
+            formatted_msg = f"[{current_time}] {message}"
 
         self.log_text.append(formatted_msg)
+
+        # Auto-scroll to bottom
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.log_text.setTextCursor(cursor)
+        self.log_text.ensureCursorVisible()
 
     def clear_log(self):
         """Clear log."""
@@ -1444,7 +1992,7 @@ class MainWindow(QMainWindow):
         # Write to file
         self.settings_manager.save_settings()
 
-    def on_tab_changed(self, index: int):
+    def on_tab_changed(self, _index: int):
         """Handle tab change event."""
         # Update dual tab summary when switching to it
         current_widget = self.tab_widget.currentWidget()

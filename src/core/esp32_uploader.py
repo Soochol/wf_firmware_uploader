@@ -135,6 +135,10 @@ class ESP32Uploader:
         progress_callback: Optional[Callable[[str], None]] = None,
         firmware_files: Optional[list] = None,
         upload_method: str = "auto",
+        before_reset: bool = True,
+        after_reset: bool = True,
+        no_sync: bool = False,
+        connect_attempts: int = 1,
     ) -> bool:
         """Upload ESP32 firmware.
 
@@ -185,7 +189,8 @@ class ESP32Uploader:
             if not self._check_port_connection(port, progress_callback):
                 return False
             return self._upload_with_auto_control(
-                files_to_upload, port, baud_rate, chip, progress_callback
+                files_to_upload, port, baud_rate, chip, progress_callback,
+                before_reset, after_reset, no_sync, connect_attempts
             )
 
     def _upload_with_auto_control(
@@ -195,6 +200,10 @@ class ESP32Uploader:
         baud_rate: int,
         chip: str,
         progress_callback: Optional[Callable[[str], None]] = None,
+        before_reset: bool = True,
+        after_reset: bool = True,
+        no_sync: bool = False,
+        connect_attempts: int = 1,
     ) -> bool:
         """Upload firmware with automatic reset control (original method)."""
         cmd = [
@@ -207,8 +216,27 @@ class ESP32Uploader:
             port,
             "--baud",
             str(baud_rate),
-            "write_flash",
         ]
+
+        # Add before reset option
+        if no_sync:
+            cmd.extend(["--before", "no-reset-no-sync"])
+        elif not before_reset:
+            cmd.extend(["--before", "no-reset"])
+        else:
+            cmd.extend(["--before", "default-reset"])
+
+        # Add after reset option
+        if not after_reset:
+            cmd.extend(["--after", "no-reset"])
+        else:
+            cmd.extend(["--after", "hard-reset"])
+
+        # Add connect attempts if > 1
+        if connect_attempts > 1:
+            cmd.extend(["--connect-attempts", str(connect_attempts)])
+
+        cmd.append("write-flash")
 
         # Add all address-file pairs
         for address, filepath in files_to_upload:
@@ -422,32 +450,121 @@ class ESP32Uploader:
         self,
         port: str,
         chip: str = "auto",
+        baud_rate: int = 921600,
+        before_reset: bool = True,
+        after_reset: bool = True,
+        no_sync: bool = False,
+        connect_attempts: int = 1,
         progress_callback: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """Erase ESP32 flash."""
         if not self.is_esptool_available():
             return False
 
-        try:
-            cmd = [sys.executable, "-m", "esptool", "--chip", chip, "--port", port, "erase_flash"]
-
+        # First, try to connect to verify ESP32 is accessible (like upload does)
+        if not self._check_port_connection(port, progress_callback):
             if progress_callback:
-                progress_callback(f"Erasing ESP32 flash on port {port}...")
+                progress_callback("Failed to connect to ESP32 for erase operation")
+                progress_callback("Trying alternative connection approach...")
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+        # Try erase with multiple attempts and progressive fallback
+        for attempt in range(max(1, connect_attempts)):
+            try:
+                if attempt > 0 and progress_callback:
+                    progress_callback(f"Erase attempt {attempt + 1}/{connect_attempts}")
 
-            if result.returncode == 0:
+                # Use lower baud rate on retry attempts
+                current_baud = baud_rate if attempt == 0 else min(115200, baud_rate)
+
+                cmd = [sys.executable, "-m", "esptool", "--chip", chip, "--port", port, "--baud", str(current_baud)]
+
+                # Add before reset option
+                if no_sync:
+                    cmd.extend(["--before", "no-reset-no-sync"])
+                elif not before_reset:
+                    cmd.extend(["--before", "no-reset"])
+                else:
+                    cmd.extend(["--before", "default-reset"])
+
+                # Add after reset option
+                if not after_reset:
+                    cmd.extend(["--after", "no-reset"])
+                else:
+                    cmd.extend(["--after", "hard-reset"])
+
+                # Always add connect attempts for erase (more aggressive)
+                cmd.extend(["--connect-attempts", str(max(3, connect_attempts))])
+
+                cmd.append("erase-flash")
+
                 if progress_callback:
-                    progress_callback("ESP32 flash erased successfully!")
-                return True
-            else:
-                if progress_callback:
-                    progress_callback(f"ESP32 erase failed: {result.stderr}")
-                return False
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            if progress_callback:
-                progress_callback(f"ESP32 erase error: {str(e)}")
-            return False
+                    progress_callback(f"Erasing ESP32 flash on port {port}...")
+                    progress_callback(f"Using baud rate: {current_baud}")
+
+                # Use Popen for better control and real-time output
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True,
+                )
+
+                # Read output in real-time
+                while True:
+                    if process.stdout is None:
+                        break
+                    output = process.stdout.readline()
+                    if output == "" and process.poll() is not None:
+                        break
+                    if output and progress_callback:
+                        output = output.strip()
+                        if output:
+                            # Filter out some verbose esptool messages
+                            if not any(skip in output.lower() for skip in ["mac address:", "chip is", "features:"]):
+                                progress_callback(f"Erase: {output}")
+
+                return_code = process.wait()
+
+                if return_code == 0:
+                    if progress_callback:
+                        progress_callback("ESP32 flash erased successfully!")
+                    return True
+                else:
+                    if attempt == connect_attempts - 1:  # Last attempt
+                        if progress_callback:
+                            progress_callback(f"ESP32 erase failed after {connect_attempts} attempts")
+                    else:
+                        if progress_callback:
+                            progress_callback(f"Erase attempt {attempt + 1} failed, retrying...")
+                        continue  # Try next attempt
+
+            except subprocess.TimeoutExpired:
+                if attempt == connect_attempts - 1:
+                    if progress_callback:
+                        progress_callback("ESP32 erase timeout - operation took too long")
+                    return False
+                else:
+                    if progress_callback:
+                        progress_callback(f"Attempt {attempt + 1} timed out, retrying with different settings...")
+                    continue
+
+            except Exception as e:
+                if attempt == connect_attempts - 1:
+                    if progress_callback:
+                        progress_callback(f"ESP32 erase error: {str(e)}")
+                    return False
+                else:
+                    if progress_callback:
+                        progress_callback(f"Attempt {attempt + 1} error: {str(e)}, retrying...")
+                    continue
+
+        # If we get here, all attempts failed
+        if progress_callback:
+            progress_callback("ESP32 erase failed: All connection attempts exhausted")
+            progress_callback("Try: 1) Check board connection 2) Press RESET button 3) Use manual upload mode")
+        return False
 
     def read_flash_info(self, port: str, chip: str = "auto") -> Optional[dict]:
         """Read ESP32 flash information."""

@@ -249,7 +249,7 @@ class LogViewer(QWidget):
         # Log text area
         self.log_text = QTextEdit()
         self.log_text.setMaximumHeight(200)
-        self.log_text.setFont(QFont("Courier", 9))
+        self.log_text.setFont(QFont("Courier", 10))
         self.log_text.setReadOnly(True)
         layout.addWidget(self.log_text)
 

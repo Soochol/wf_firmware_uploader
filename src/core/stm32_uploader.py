@@ -24,36 +24,57 @@ class STM32Uploader:
         self.stm32_programmer_cli = self._find_stm32_programmer_cli()
 
     def _find_stm32_programmer_cli(self) -> str:
-        """Find STM32_Programmer_CLI.exe path on Windows."""
-        # Default installation paths
-        default_paths = [
-            (
-                r"C:\Program Files\STMicroelectronics\STM32Cube"
-                r"\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"
-            ),
-            (
-                r"C:\Program Files (x86)\STMicroelectronics\STM32Cube"
-                r"\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"
-            ),
-        ]
+        """Find STM32_Programmer_CLI path on Windows/Linux."""
+        system_type = platform.system()
 
-        # Check paths in order
-        for path in default_paths:
-            if os.path.exists(path):
-                return path
+        if system_type == "Windows":
+            # Windows installation paths
+            default_paths = [
+                (
+                    r"C:\Program Files\STMicroelectronics\STM32Cube"
+                    r"\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"
+                ),
+                (
+                    r"C:\Program Files (x86)\STMicroelectronics\STM32Cube"
+                    r"\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"
+                ),
+            ]
 
-        # Search in registry (Windows only)
-        if WINREG and platform.system() == "Windows":
-            try:
-                with WINREG.OpenKey(  # type: ignore
-                    WINREG.HKEY_LOCAL_MACHINE, "SOFTWARE\\STMicroelectronics"  # type: ignore
-                ) as _:
+            # Check paths in order
+            for path in default_paths:
+                if os.path.exists(path):
+                    return path
+
+            # Search in registry (Windows only)
+            if WINREG:
+                try:
+                    with WINREG.OpenKey(  # type: ignore
+                        WINREG.HKEY_LOCAL_MACHINE, "SOFTWARE\\STMicroelectronics"  # type: ignore
+                    ) as _:
+                        pass
+                except FileNotFoundError:
                     pass
-            except FileNotFoundError:
-                pass
 
-        # Search in environment PATH
-        return "STM32_Programmer_CLI.exe"
+            return "STM32_Programmer_CLI.exe"
+
+        else:
+            # Linux/WSL paths
+            linux_paths = [
+                "/opt/st/stm32cubeide_1.14.1/plugins/com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.linux64_2.1.400.202401151627/tools/bin/STM32_Programmer_CLI",
+                "/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI",
+                "/home/" + os.getenv("USER", "") + "/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI",
+                # WSL access to Windows installation
+                "/mnt/c/Program Files/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe",
+                "/mnt/c/Program Files (x86)/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe",
+            ]
+
+            # Check Linux/WSL paths
+            for path in linux_paths:
+                if os.path.exists(path):
+                    return path
+
+            # Try common alternative names
+            return "STM32_Programmer_CLI"
 
     def is_stm32_programmer_cli_available(self) -> bool:
         """Check if STM32_Programmer_CLI is available."""
@@ -108,6 +129,10 @@ class STM32Uploader:
         port: str = "SWD",
         flash_address: str = "0x08000000",
         progress_callback: Optional[Callable[[str], None]] = None,
+        connection_mode: str = "HOTPLUG",
+        hardware_reset: bool = False,
+        connection_speed: int = 4000,
+        retry_attempts: int = 3,
     ) -> bool:
         """Upload STM32 firmware."""
         if not os.path.exists(firmware_path):
@@ -121,23 +146,61 @@ class STM32Uploader:
             return False
 
         try:
-            cmd = [
-                self.stm32_programmer_cli,
-                "-c",
-                f"port={port}",
-                "-c",
-                "mode=HOTPLUG",
-                "-w",
-                firmware_path,
-                flash_address,
-                "-v",
-                "-rst",
-            ]
+            # Build command with configurable options
+            for attempt in range(retry_attempts):
+                cmd = [
+                    self.stm32_programmer_cli,
+                    "-c",
+                    f"port={port}",
+                    "-c",
+                    f"mode={connection_mode}",
+                ]
 
+                # Add connection speed
+                if connection_speed != 4000:  # Only add if not default
+                    cmd.extend(["-c", f"freq={connection_speed}"])
+
+                # Add hardware reset option
+                if hardware_reset:
+                    cmd.extend(["-c", "reset=HWrst"])
+
+                # Add upload command
+                cmd.extend([
+                    "-w",
+                    firmware_path,
+                    flash_address,
+                    "-v",
+                    "-rst",
+                ])
+
+                if progress_callback:
+                    if attempt > 0:
+                        progress_callback(f"STM32 upload retry attempt {attempt + 1}/{retry_attempts}")
+                    progress_callback(f"Starting STM32 upload: {Path(firmware_path).name}")
+                    progress_callback(f"Port: {port}, Address: {flash_address}")
+                    progress_callback(f"Mode: {connection_mode}, Speed: {connection_speed}kHz")
+                    if hardware_reset:
+                        progress_callback("Hardware reset enabled")
+
+                # Try the upload
+                success = self._execute_stm32_command(cmd, progress_callback)
+                if success:
+                    return True
+                elif attempt < retry_attempts - 1:
+                    if progress_callback:
+                        progress_callback(f"Upload failed, retrying... ({attempt + 1}/{retry_attempts})")
+
+            # All attempts failed
+            return False
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             if progress_callback:
-                progress_callback(f"Starting STM32 upload: {Path(firmware_path).name}")
-                progress_callback(f"Port: {port}, Address: {flash_address}")
+                progress_callback(f"STM32 upload error: {str(e)}")
+            return False
 
+    def _execute_stm32_command(self, cmd, progress_callback):
+        """Execute STM32 command and handle output."""
+        try:
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -201,13 +264,25 @@ class STM32Uploader:
 
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             if progress_callback:
-                progress_callback(f"STM32 upload error: {str(e)}")
+                progress_callback(f"STM32 command error: {str(e)}")
             return False
 
     def erase_flash(
-        self, port: str = "SWD", progress_callback: Optional[Callable[[str], None]] = None
+        self,
+        port: str = "SWD",
+        chip: str = "auto",
+        baud_rate: int = 921600,
+        before_reset: bool = True,
+        after_reset: bool = True,
+        no_sync: bool = False,
+        connect_attempts: int = 1,
+        progress_callback: Optional[Callable[[str], None]] = None,
     ) -> bool:
-        """Erase STM32 flash."""
+        """Erase STM32 flash.
+
+        Note: STM32 ignores ESP32-specific parameters (chip, baud_rate, etc.)
+        but accepts them for interface compatibility.
+        """
         if not self.is_stm32_programmer_cli_available():
             return False
 
@@ -224,6 +299,8 @@ class STM32Uploader:
 
             if progress_callback:
                 progress_callback(f"Erasing STM32 flash on port {port}...")
+                if baud_rate != 921600:
+                    progress_callback(f"Note: STM32 ignores baud rate setting ({baud_rate})")
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
 

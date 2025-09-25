@@ -1,9 +1,8 @@
 """Settings management module."""
 
 import json
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 class SettingsManager:
@@ -19,18 +18,27 @@ class SettingsManager:
         """Load default settings."""
         return {
             "version": "1.0",
-            "window": {"x": 100, "y": 100, "width": 800, "height": 600},
+            "window": {"x": 100, "y": 100, "width": 1000, "height": 750},
             "stm32": {
                 "last_firmware_path": "",
                 "last_port": "SWD",
                 "flash_address": "0x08000000",
                 "full_erase": False,
+                "connection_mode": "HOTPLUG",  # HOTPLUG, UR, Normal
+                "hardware_reset": False,
+                "connection_speed": 4000,  # kHz
+                "retry_attempts": 3,
             },
             "esp32": {
                 "last_firmware_files": [],  # List of [address, filepath] pairs
                 "last_port": "",
                 "full_erase": False,
                 "upload_method": "auto",  # "auto" or "manual"
+                "baud_rate": 921600,
+                "before_reset": True,  # --before default-reset
+                "after_reset": True,  # --after hard-reset
+                "no_sync": False,  # --before no-reset-no-sync
+                "connect_attempts": 1,
             },
         }
 
@@ -112,10 +120,42 @@ class SettingsManager:
         """Set STM32 full erase setting."""
         self.settings["stm32"]["full_erase"] = enabled
 
+    def get_stm32_connection_mode(self) -> str:
+        """Get STM32 connection mode setting."""
+        return self.settings["stm32"]["connection_mode"]
+
+    def set_stm32_connection_mode(self, mode: str):
+        """Set STM32 connection mode setting."""
+        self.settings["stm32"]["connection_mode"] = mode
+
+    def get_stm32_hardware_reset(self) -> bool:
+        """Get STM32 hardware reset setting."""
+        return self.settings["stm32"]["hardware_reset"]
+
+    def set_stm32_hardware_reset(self, enabled: bool):
+        """Set STM32 hardware reset setting."""
+        self.settings["stm32"]["hardware_reset"] = enabled
+
+    def get_stm32_connection_speed(self) -> int:
+        """Get STM32 connection speed setting."""
+        return self.settings["stm32"]["connection_speed"]
+
+    def set_stm32_connection_speed(self, speed: int):
+        """Set STM32 connection speed setting."""
+        self.settings["stm32"]["connection_speed"] = speed
+
+    def get_stm32_retry_attempts(self) -> int:
+        """Get STM32 retry attempts setting."""
+        return self.settings["stm32"]["retry_attempts"]
+
+    def set_stm32_retry_attempts(self, attempts: int):
+        """Set STM32 retry attempts setting."""
+        self.settings["stm32"]["retry_attempts"] = max(1, attempts)
+
     # ESP32 settings
     def get_esp32_last_firmware_files(self) -> List[Tuple[str, str]]:
         """Get last ESP32 firmware files as list of (address, filepath) tuples."""
-        return [(addr, path) for addr, path in self.settings["esp32"]["last_firmware_files"]]
+        return list(self.settings["esp32"]["last_firmware_files"])
 
     def set_esp32_last_firmware_files(self, files: List[Tuple[str, str]]):
         """Set last ESP32 firmware files."""
@@ -144,6 +184,46 @@ class SettingsManager:
     def set_esp32_upload_method(self, method: str):
         """Set ESP32 upload method setting."""
         self.settings["esp32"]["upload_method"] = method
+
+    def get_esp32_baud_rate(self) -> int:
+        """Get ESP32 baud rate setting."""
+        return self.settings["esp32"]["baud_rate"]
+
+    def set_esp32_baud_rate(self, baud_rate: int):
+        """Set ESP32 baud rate setting."""
+        self.settings["esp32"]["baud_rate"] = baud_rate
+
+    def get_esp32_before_reset(self) -> bool:
+        """Get ESP32 before reset setting."""
+        return self.settings["esp32"]["before_reset"]
+
+    def set_esp32_before_reset(self, enabled: bool):
+        """Set ESP32 before reset setting."""
+        self.settings["esp32"]["before_reset"] = enabled
+
+    def get_esp32_after_reset(self) -> bool:
+        """Get ESP32 after reset setting."""
+        return self.settings["esp32"]["after_reset"]
+
+    def set_esp32_after_reset(self, enabled: bool):
+        """Set ESP32 after reset setting."""
+        self.settings["esp32"]["after_reset"] = enabled
+
+    def get_esp32_no_sync(self) -> bool:
+        """Get ESP32 no-sync setting."""
+        return self.settings["esp32"]["no_sync"]
+
+    def set_esp32_no_sync(self, enabled: bool):
+        """Set ESP32 no-sync setting."""
+        self.settings["esp32"]["no_sync"] = enabled
+
+    def get_esp32_connect_attempts(self) -> int:
+        """Get ESP32 connect attempts setting."""
+        return self.settings["esp32"]["connect_attempts"]
+
+    def set_esp32_connect_attempts(self, attempts: int):
+        """Set ESP32 connect attempts setting."""
+        self.settings["esp32"]["connect_attempts"] = max(1, attempts)
 
     # Validation helpers
     def validate_file_exists(self, filepath: str) -> bool:
