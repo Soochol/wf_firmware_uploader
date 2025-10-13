@@ -112,4 +112,5 @@ dev = [
     "mypy>=1.17.1",
     "pylint>=3.3.8",
     "types-pyserial>=3.5.0.20250822",
+    "pyinstaller>=6.0.0",
 ]

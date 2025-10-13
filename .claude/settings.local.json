@@ -10,7 +10,13 @@
       "Bash(uv sync:*)",
       "Bash(uv pip:*)",
       "Bash(uv add:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git stash:*)",
+      "Bash(powershell:*)",
+      "Bash(pylint:*)",
+      "Bash(flake8:*)",
+      "Bash(dir:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

@@ -4,7 +4,6 @@
 import os
 import platform
 import sys
-from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
@@ -19,13 +18,13 @@ def detect_platform():
     if system == "Linux":
         # Check if running on WSL
         try:
-            with open("/proc/version", "r") as f:
+            with open("/proc/version", "r", encoding="utf-8") as f:
                 if "microsoft" in f.read().lower():
                     return "WSL"
         except FileNotFoundError:
             pass
         return "Linux"
-    elif system == "Windows":
+    if system == "Windows":
         return "Windows"
     else:
         return system
