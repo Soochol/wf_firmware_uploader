@@ -1498,47 +1498,38 @@ class ESP32Tab(QWidget):
 
         try:
             self.append_log("Detecting chip type from connected device...")
-            self.append_log("Attempting quick detection with esptool...")
+            self.append_log("Tip: Press RESET button on ESP32 if prompted")
+            self.append_log("")
 
             # Create progress callback to show detection progress
             def progress_callback(msg: str):
                 self.append_log(msg)
 
-            # Try direct chip detection first (faster, works for most cases)
-            chip_info = self.esp32_uploader.get_chip_info(current_port, progress_callback)
+            # Try connection-based detection (same as upload - most reliable)
+            self.append_log("Connecting to ESP32...")
+            connected, chip_info = self.esp32_uploader._check_port_connection(
+                current_port, progress_callback
+            )
 
-            # If direct detection fails, try with connection check
-            if not chip_info:
-                self.append_log("Quick detection failed, trying with connection reset...")
-                self.append_log("Connecting to ESP32...")
-
-                connected, chip_info_from_connection = self.esp32_uploader._check_port_connection(
-                    current_port, progress_callback
+            if not connected or not chip_info:
+                self.append_log("Failed to detect chip automatically")
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Icon.Warning)
+                msg.setWindowTitle("Detection Failed")
+                msg.setText(
+                    "Could not detect chip type automatically.\n\n"
+                    "Possible reasons:\n"
+                    "- ESP32 is running application (try after upload/erase)\n"
+                    "- USB connection issue\n"
+                    "- Need to press RESET button\n\n"
+                    "Alternative: Manually set the address:\n"
+                    "1. Double-click 'bootloader.bin' in the list\n"
+                    "2. Change to 0x0 for ESP32-S3/C3/C6/H2\n"
+                    "3. Or keep 0x1000 for ESP32 Classic"
                 )
-                if not connected:
-                    self.append_log("Failed to connect to ESP32")
-                    msg = QMessageBox(self)
-                    msg.setIcon(QMessageBox.Icon.Warning)
-                    msg.setWindowTitle("Connection Failed")
-                    msg.setText(
-                        "Could not detect chip type.\n\n"
-                        "Alternative: You can manually set the address:\n"
-                        "1. Double-click 'bootloader.bin' in the list\n"
-                        "2. Change address to 0x0 for ESP32-S3/C3/C6/H2\n"
-                        "3. Or keep 0x1000 for ESP32 Classic\n\n"
-                        "Or try uploading - chip type will be shown in the log."
-                    )
-                    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-                    msg.exec()
-                    return
-
-                # Use chip info from connection if available
-                if chip_info_from_connection:
-                    chip_info = chip_info_from_connection
-                    self.append_log("Using chip info from connection")
-                else:
-                    self.append_log("Connection successful, reading chip info...")
-                    chip_info = self.esp32_uploader.get_chip_info(current_port, progress_callback)
+                msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                msg.exec()
+                return
 
             if chip_info and "chip" in chip_info:
                 chip_name = chip_info["chip"].upper()
