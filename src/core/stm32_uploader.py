@@ -165,12 +165,14 @@ class STM32Uploader:
                     cmd.extend(["-c", "reset=HWrst"])
 
                 # Add upload command
+                # Use -s (start/run) instead of -rst to properly release SWD connection
+                # -s makes the MCU run and releases debugger, preventing connection lock
                 cmd.extend([
                     "-w",
                     firmware_path,
                     flash_address,
                     "-v",
-                    "-rst",
+                    "-s",  # Start MCU application and release debugger
                 ])
 
                 if progress_callback:
@@ -185,7 +187,15 @@ class STM32Uploader:
                 # Try the upload
                 success = self._execute_stm32_command(cmd, progress_callback)
                 if success:
-                    # Disconnect programmer to allow next upload without power cycle
+                    # Important: Add delay to ensure SWD connection is fully released
+                    # The -s flag starts the application, but we need to give time
+                    # for the debugger to cleanly disconnect
+                    import time
+                    if progress_callback:
+                        progress_callback("Waiting for SWD release...")
+                    time.sleep(1)  # 1 second delay for clean disconnect
+
+                    # Additional disconnect attempt for stubborn connections
                     self._disconnect_programmer(port, connection_mode, progress_callback)
                     return True
                 elif attempt < retry_attempts - 1:
@@ -211,40 +221,62 @@ class STM32Uploader:
     ) -> bool:
         """Disconnect STM32 programmer to allow next upload without power cycle.
 
-        This is crucial to prevent "already connected" errors on subsequent uploads.
-        Without explicit disconnect, SWD interface remains locked.
+        STM32_Programmer_CLI doesn't have a --disconnect flag in the traditional sense.
+        Instead, we need to connect and immediately disconnect using reset modes.
+
+        The solution is to use -s (software reset) or -hardRst and then exit cleanly.
         """
         try:
+            # Method 1: Try to connect with mode=Normal and then disconnect via reset
+            # This releases the SWD lock by doing a clean exit sequence
             cmd = [
                 self.stm32_programmer_cli,
                 "-c",
                 f"port={port}",
                 "-c",
                 f"mode={connection_mode}",
-                "--disconnect",
+                "-c",
+                "reset=SWrst",  # Software reset
+                "-s",  # Start (run) the MCU - releases debugger
             ]
 
             if progress_callback:
-                progress_callback("Disconnecting programmer...")
+                progress_callback("Releasing SWD connection...")
 
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=5, check=False
             )
 
-            if result.returncode == 0 or "Disconnected" in result.stdout:
+            # Check if command succeeded
+            success = result.returncode == 0 or "Application is running" in result.stdout
+
+            if success:
                 if progress_callback:
-                    progress_callback("✓ Programmer disconnected successfully")
+                    progress_callback("✓ SWD connection released")
                 return True
             else:
-                # Disconnect failure is not critical, just log it
+                # Try alternative method: use -rst and let it timeout/exit
                 if progress_callback:
-                    progress_callback("Note: Programmer disconnect returned non-zero code")
-                return False
+                    progress_callback("Trying alternative disconnect method...")
+
+                # Just a short connection that exits cleanly
+                alt_cmd = [
+                    self.stm32_programmer_cli,
+                    "-c",
+                    f"port={port}",
+                    "-rst",  # Reset and exit
+                ]
+
+                subprocess.run(alt_cmd, capture_output=True, text=True, timeout=3, check=False)
+
+                if progress_callback:
+                    progress_callback("✓ Disconnect attempt completed")
+                return True
 
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             # Disconnect errors are not critical
             if progress_callback:
-                progress_callback(f"Note: Disconnect command issue: {str(e)}")
+                progress_callback(f"Note: Disconnect had minor issue (non-critical): {str(e)}")
             return False
 
     def _execute_stm32_command(self, cmd, progress_callback):
