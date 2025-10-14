@@ -24,15 +24,15 @@
     "last_firmware_files": [
       [
         "0x1000",
-        "C:/myCodeRepoWindows/PSA1.0_firmware/.pio/build/usb/bootloader.bin"
-      ],
-      [
-        "0x10000",
-        "C:/myCodeRepoWindows/PSA1.0_firmware/.pio/build/usb/firmware.bin"
+        "C:\\myCodeRepoWindows\\wf_firmware_uploader\\wf_firmware_uploader\\firmwares\\esp32\\bootloader.bin"
       ],
       [
         "0x8000",
-        "C:/myCodeRepoWindows/PSA1.0_firmware/.pio/build/usb/partitions.bin"
+        "C:\\myCodeRepoWindows\\wf_firmware_uploader\\wf_firmware_uploader\\firmwares\\esp32\\partitions.bin"
+      ],
+      [
+        "0x10000",
+        "C:\\myCodeRepoWindows\\wf_firmware_uploader\\wf_firmware_uploader\\firmwares\\esp32\\firmware.bin"
       ]
     ],
     "last_port": "COM4",

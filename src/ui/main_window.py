@@ -988,27 +988,60 @@ class ESP32Tab(QWidget):
 
     def add_firmware_file(self):
         """Add a firmware file with address."""
+        from PySide6.QtWidgets import QInputDialog
+
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select ESP32 Firmware File", "", "Binary Files (*.bin);;All Files (*)"
         )
         if file_path:
-            # Simple address dialog - you could make this more sophisticated
-            address = self.get_address_for_file(file_path)
-            if address:
-                self.firmware_files.append((address, file_path))
-                self.update_file_list()
-                # Auto-save settings when file is added
-                self.save_settings()
-                if self.settings_manager:
-                    self.settings_manager.save_settings()
+            # Auto-detect address based on filename
+            suggested_address = self.get_address_for_file(file_path)
+            filename = Path(file_path).name
+
+            # Let user confirm or modify the address
+            is_bootloader = "bootloader" in filename.lower()
+            hint = ""
+            if is_bootloader:
+                hint = "\n\nNote: ESP32-S3/C3/C6/H2 use 0x0, ESP32 Classic uses 0x1000"
+
+            address, ok = QInputDialog.getText(
+                self,
+                "Flash Address",
+                f"Enter flash address for {filename}:{hint}",
+                text=suggested_address,
+            )
+
+            if ok and address:
+                # Validate hex address format
+                try:
+                    int(address, 16)  # Check if valid hex
+                    self.firmware_files.append((address, file_path))
+                    self.update_file_list()
+                    # Auto-save settings when file is added
+                    self.save_settings()
+                    if self.settings_manager:
+                        self.settings_manager.save_settings()
+                except ValueError:
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Icon.Warning)
+                    msg.setWindowTitle("Invalid Address")
+                    msg.setText(f"Invalid hex address: {address}\nPlease use format: 0x1000")
+                    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    msg.exec()
 
     def get_address_for_file(self, file_path: str) -> str:
-        """Get flash address for file (simple heuristic)."""
+        """Get flash address for file (simple heuristic).
+
+        Note: For ESP32-S3/C3/C6/H2, bootloader is at 0x0 instead of 0x1000.
+        This method uses ESP32 Classic addresses. Users should use 'Full Build'
+        button for automatic chip detection or manually adjust addresses.
+        """
         filename = Path(file_path).name.lower()
 
-        # Common ESP32 file patterns
+        # Common ESP32 file patterns (ESP32 Classic addresses)
+        # WARNING: ESP32-S3/C3/C6/H2 use different addresses!
         if "bootloader" in filename:
-            return "0x1000"
+            return "0x1000"  # ESP32 Classic (0x0 for S3/C3/C6/H2)
         if "partition" in filename or "partitions" in filename:
             return "0x8000"
         if "ota_data" in filename:
@@ -1032,15 +1065,33 @@ class ESP32Tab(QWidget):
                 self.settings_manager.save_settings()
 
     def setup_full_build(self):
-        """Quick setup for full ESP32 build directory."""
+        """Quick setup for full ESP32 build directory with automatic chip detection."""
         dir_path = QFileDialog.getExistingDirectory(self, "Select ESP32 Build Directory")
         if dir_path:
             build_path = Path(dir_path)
             self.firmware_files = []
 
-            # Look for common ESP32 build files
+            # Detect chip type from bootloader (ESP32-S3/C3/C6/H2 use different addresses)
+            bootloader_address = "0x1000"  # Default for ESP32 Classic
+
+            # Check if this is an ESP32-S3/C3/C6/H2 build by looking at flasher_args.json
+            flasher_args_path = build_path / "flasher_args.json"
+            if flasher_args_path.exists():
+                try:
+                    import json
+
+                    with open(flasher_args_path, "r", encoding="utf-8") as f:
+                        flasher_args = json.load(f)
+                        # Check flash_files for bootloader address
+                        flash_files = flasher_args.get("flash_files", {})
+                        if "0x0" in flash_files or any("0x0" in k for k in flash_files.keys()):
+                            bootloader_address = "0x0"  # ESP32-S3/C3/C6/H2
+                except Exception:
+                    pass  # Fall back to ESP32 Classic addresses
+
+            # Look for common ESP32 build files with correct addresses
             files_to_check = [
-                ("0x1000", "bootloader.bin"),
+                (bootloader_address, "bootloader.bin"),
                 ("0x8000", "partition-table.bin"),
                 ("0x8000", "partitions.bin"),
                 ("0xd000", "ota_data_initial.bin"),
