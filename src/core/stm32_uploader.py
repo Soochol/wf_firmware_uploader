@@ -248,70 +248,127 @@ class STM32Uploader:
     ) -> bool:
         """Upload firmware in automatic mode.
 
-        Automatic mode waits for MCU to be connected/powered on,
-        then automatically uploads firmware.
+        Automatic mode continuously polls for MCU connection,
+        then automatically uploads firmware when detected.
 
-        This mimics STM32CubeProgrammer's "Automatic mode" feature.
+        This implements STM32CubeProgrammer's "Automatic mode" via polling.
 
         Workflow:
-        1. Start waiting for MCU connection
-        2. When MCU detected (power on), automatically connect
-        3. Upload firmware immediately
-        4. Wait for next MCU (loop)
+        1. Poll for MCU connection every 1 second
+        2. When MCU detected (power on), automatically upload
+        3. Wait for MCU to disconnect
+        4. Loop back to step 1 (wait for next MCU)
         """
+        import time
+
         try:
             if progress_callback:
                 progress_callback("=" * 70)
                 progress_callback("🔄 AUTOMATIC MODE STARTED")
                 progress_callback("=" * 70)
-                progress_callback("Waiting for MCU connection...")
-                progress_callback("Connect SWD cable and power on MCU to start upload")
+                progress_callback("Polling for MCU connections every 1 second...")
+                progress_callback("Connect SWD cable and power on MCU to auto-upload")
                 progress_callback("")
-                progress_callback("Press 'Erase Flash' button to stop automatic mode")
+                progress_callback("⚠ To stop: Close application or press Ctrl+C in terminal")
                 progress_callback("=" * 70)
-
-            # Build automatic mode command
-            cmd = [
-                self.stm32_programmer_cli,
-                "-c",
-                f"port={port}",
-                "-c",
-                f"mode={connection_mode}",
-            ]
-
-            # Add connection speed
-            if connection_speed != 4000:
-                cmd.extend(["-c", f"freq={connection_speed}"])
-
-            # Add hardware reset option
-            if hardware_reset:
-                cmd.extend(["-c", "reset=HWrst"])
-
-            # Add automatic mode flag
-            cmd.extend(["-autostart", "1"])  # Enable automatic mode
-
-            # Add upload command
-            cmd.extend([
-                "-w",
-                firmware_path,
-                flash_address,
-                "-v",  # Verify
-                "-s",  # Start MCU after upload
-            ])
-
-            if progress_callback:
-                progress_callback(f"Automatic mode configuration:")
+                progress_callback(f"Configuration:")
                 progress_callback(f"  Firmware: {Path(firmware_path).name}")
                 progress_callback(f"  Address: {flash_address}")
-                progress_callback(f"  Port: {port}")
-                progress_callback(f"  Mode: {connection_mode}")
+                progress_callback(f"  Port: {port}, Mode: {connection_mode}")
+                progress_callback("=" * 70)
                 progress_callback("")
 
-            # Execute in automatic mode
-            # Note: This will keep running and waiting for connections
-            return self._execute_stm32_command(cmd, progress_callback)
+            upload_count = 0
+            last_connected = False
 
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            # Continuous polling loop
+            while True:
+                try:
+                    # Check if MCU is connected
+                    check_cmd = [
+                        self.stm32_programmer_cli,
+                        "-c",
+                        f"port={port}",
+                        "-c",
+                        f"mode={connection_mode}",
+                        "-c",
+                        f"freq={connection_speed}",
+                    ]
+
+                    # Quick connection check (1 second timeout)
+                    result = subprocess.run(
+                        check_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=1,
+                        check=False
+                    )
+
+                    # Check if connected
+                    is_connected = result.returncode == 0
+
+                    if is_connected and not last_connected:
+                        # MCU just connected! Upload immediately
+                        upload_count += 1
+                        if progress_callback:
+                            progress_callback("")
+                            progress_callback(f"✓ MCU #{upload_count} detected! Starting upload...")
+
+                        # Perform upload
+                        success = self.upload_firmware(
+                            firmware_path=firmware_path,
+                            port=port,
+                            flash_address=flash_address,
+                            progress_callback=progress_callback,
+                            connection_mode=connection_mode,
+                            hardware_reset=hardware_reset,
+                            connection_speed=connection_speed,
+                            retry_attempts=1,
+                            auto_mode=False,  # Don't recurse!
+                        )
+
+                        if success:
+                            if progress_callback:
+                                progress_callback(f"✓ MCU #{upload_count} programmed successfully!")
+                                progress_callback("Waiting for MCU to disconnect...")
+                        else:
+                            if progress_callback:
+                                progress_callback(f"❌ MCU #{upload_count} upload failed!")
+
+                        last_connected = True
+
+                    elif not is_connected and last_connected:
+                        # MCU disconnected
+                        if progress_callback:
+                            progress_callback("MCU disconnected. Waiting for next MCU...")
+                            progress_callback("")
+                        last_connected = False
+
+                    elif not is_connected and not last_connected:
+                        # Still waiting for connection
+                        if progress_callback and upload_count == 0:
+                            # Only show on first wait
+                            pass  # Already showed message
+
+                    # Wait before next poll
+                    time.sleep(1)
+
+                except subprocess.TimeoutExpired:
+                    # Connection check timed out - MCU not connected
+                    if last_connected:
+                        if progress_callback:
+                            progress_callback("MCU disconnected. Waiting for next MCU...")
+                            progress_callback("")
+                        last_connected = False
+                    time.sleep(1)
+
+                except KeyboardInterrupt:
+                    if progress_callback:
+                        progress_callback("")
+                        progress_callback("Automatic mode stopped by user")
+                    return True
+
+        except Exception as e:
             if progress_callback:
                 progress_callback(f"Automatic mode error: {str(e)}")
             return False
