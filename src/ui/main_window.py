@@ -1498,11 +1498,32 @@ class ESP32Tab(QWidget):
 
         try:
             self.append_log("Detecting chip type from connected device...")
+            self.append_log("Connecting to ESP32...")
 
             # Create progress callback to show detection progress
             def progress_callback(msg: str):
                 self.append_log(msg)
 
+            # First, try to connect to ESP32 (same as upload does)
+            # This triggers the ESP32 to enter bootloader mode
+            if not self.esp32_uploader._check_port_connection(current_port, progress_callback):
+                self.append_log("Failed to connect to ESP32")
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Icon.Warning)
+                msg.setWindowTitle("Connection Failed")
+                msg.setText(
+                    "Could not connect to ESP32.\n\n"
+                    "Please check:\n"
+                    "1. ESP32 is connected to selected port\n"
+                    "2. USB cable is properly connected\n"
+                    "3. Try pressing RESET button on ESP32\n"
+                    "4. Drivers are installed"
+                )
+                msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                msg.exec()
+                return
+
+            self.append_log("Connection successful, reading chip info...")
             chip_info = self.esp32_uploader.get_chip_info(current_port, progress_callback)
 
             if chip_info and "chip" in chip_info:
