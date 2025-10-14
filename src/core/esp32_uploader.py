@@ -19,8 +19,12 @@ class ESP32Uploader:
         files_to_upload: list,
         chip_info: dict,
         progress_callback: Optional[Callable[[str], None]] = None,
-    ):
-        """Check if bootloader address matches the detected chip type and warn if incorrect."""
+    ) -> tuple[list, bool]:
+        """Check and auto-fix bootloader address if needed.
+
+        Returns:
+            tuple: (corrected_files_list, was_fixed)
+        """
         chip_name = chip_info.get("chip", "").upper()
 
         # Determine expected bootloader address based on chip type
@@ -32,7 +36,10 @@ class ESP32Uploader:
             chip_family = "ESP32 Classic"
 
         # Check if there's a bootloader file and its address
-        for addr, filepath in files_to_upload:
+        corrected_files = files_to_upload.copy()
+        was_fixed = False
+
+        for i, (addr, filepath) in enumerate(corrected_files):
             filename = Path(filepath).name.lower()
             if "bootloader" in filename:
                 # Normalize addresses for comparison (remove leading zeros)
@@ -41,25 +48,22 @@ class ESP32Uploader:
 
                 if addr_int != expected_int:
                     if progress_callback:
-                        progress_callback("=" * 70)
-                        progress_callback("⚠️  WARNING: Bootloader Address Mismatch!")
-                        progress_callback("=" * 70)
-                        progress_callback(f"Detected chip: {chip_name} ({chip_family})")
-                        progress_callback(f"Expected bootloader address: {expected_addr}")
-                        progress_callback(f"Current bootloader address: {addr}")
-                        progress_callback("")
-                        progress_callback("This may cause 'invalid header: 0xffffffff' error!")
-                        progress_callback("")
-                        progress_callback("To fix:")
-                        progress_callback("1. Cancel upload (if possible)")
-                        progress_callback("2. Double-click bootloader.bin in the file list")
-                        progress_callback(f"3. Change address to {expected_addr}")
-                        progress_callback("4. Upload again")
-                        progress_callback("=" * 70)
+                        progress_callback(
+                            f"⚠ WARNING: Bootloader address mismatch detected for {chip_name}"
+                        )
+                        progress_callback(
+                            f"⚠ Auto-fixing: {addr} → {expected_addr} (correct for {chip_family})"
+                        )
+
+                    # Fix the address
+                    corrected_files[i] = (expected_addr, filepath)
+                    was_fixed = True
                 else:
                     if progress_callback:
                         progress_callback(f"✓ Bootloader address {addr} is correct for {chip_name}")
                 break
+
+        return corrected_files, was_fixed
 
     def _check_port_accessibility(
         self, port: str, progress_callback: Optional[Callable[[str], None]] = None
@@ -280,7 +284,7 @@ class ESP32Uploader:
         else:
             if progress_callback:
                 progress_callback("Error: No firmware files specified")
-            return False
+            return False, [], False
 
         # Sort files by flash address (ascending order) for proper flashing sequence
         # Convert hex addresses to int for sorting, then keep as strings
@@ -301,12 +305,12 @@ class ESP32Uploader:
             if not os.path.exists(filepath):
                 if progress_callback:
                     progress_callback(f"Error: Firmware file not found: {filepath}")
-                return False
+                return False, files_to_upload, False
 
         if not self.is_esptool_available():
             if progress_callback:
                 progress_callback("Error: esptool not found. Install with: pip install esptool")
-            return False
+            return False, files_to_upload, False
 
         # Use different upload method based on selection
         if upload_method == "manual":
@@ -314,21 +318,25 @@ class ESP32Uploader:
             if progress_callback:
                 progress_callback("Using manual DTR/RTS control")
             if not self._check_port_accessibility(port, progress_callback):
-                return False
-            return self._upload_with_manual_control(
+                return False, files_to_upload, False
+            success = self._upload_with_manual_control(
                 files_to_upload, port, baud_rate, chip, progress_callback
             )
+            return success, files_to_upload, False  # Manual mode doesn't auto-fix
         else:
             # Check port connection before auto upload and get chip info
             connected, chip_info = self._check_port_connection(port, progress_callback)
             if not connected:
-                return False
+                return False, files_to_upload, False
 
-            # Check for bootloader address mismatch and warn user
+            # Check for bootloader address mismatch and auto-fix
+            address_was_fixed = False
             if chip_info and "chip" in chip_info:
-                self._check_bootloader_address(files_to_upload, chip_info, progress_callback)
+                files_to_upload, address_was_fixed = self._check_bootloader_address(
+                    files_to_upload, chip_info, progress_callback
+                )
 
-            return self._upload_with_auto_control(
+            success = self._upload_with_auto_control(
                 files_to_upload,
                 port,
                 baud_rate,
@@ -339,6 +347,9 @@ class ESP32Uploader:
                 no_sync,
                 connect_attempts,
             )
+
+            # Return success status, corrected files, and whether address was fixed
+            return success, files_to_upload, address_was_fixed
 
     def _upload_with_auto_control(
         self,

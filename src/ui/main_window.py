@@ -38,7 +38,7 @@ class UploadWorkerThread(QThread):
     """Worker thread for firmware upload tasks."""
 
     progress_update = Signal(str, str)  # device_type, message
-    upload_finished = Signal(str, bool)  # device_type, success
+    upload_finished = Signal(str, bool, list, bool)  # device_type, success, corrected_files, was_fixed
 
     def __init__(self, device_type, uploader, full_erase=False, erase_only=False, **kwargs):
         """Initialize worker thread."""
@@ -61,6 +61,8 @@ class UploadWorkerThread(QThread):
 
         try:
             success = True
+            corrected_files = []
+            was_fixed = False
 
             # Step 1: Full erase if requested
             if self.full_erase or self.erase_only:
@@ -69,31 +71,43 @@ class UploadWorkerThread(QThread):
                 erase_success = self.uploader.erase_flash(port, progress_callback=progress_callback)
                 if not erase_success:
                     progress_callback("Flash erase failed")
-                    self.upload_finished.emit(self.device_type, False)
+                    self.upload_finished.emit(self.device_type, False, [], False)
                     return
                 progress_callback("Flash erase completed successfully")
 
                 # If erase-only mode, we're done
                 if self.erase_only:
-                    self.upload_finished.emit(self.device_type, True)
+                    self.upload_finished.emit(self.device_type, True, [], False)
                     return
 
             # Step 2: Upload firmware (only if not erase-only)
             progress_callback("Starting firmware upload...")
-            success = self.uploader.upload_firmware(
-                progress_callback=progress_callback, **self.kwargs
-            )
-            self.upload_finished.emit(self.device_type, success)
+
+            # ESP32 uploader returns tuple with corrected files info
+            if self.device_type == "ESP32":
+                result = self.uploader.upload_firmware(
+                    progress_callback=progress_callback, **self.kwargs
+                )
+                if isinstance(result, tuple) and len(result) == 3:
+                    success, corrected_files, was_fixed = result
+                else:
+                    success = result
+            else:
+                success = self.uploader.upload_firmware(
+                    progress_callback=progress_callback, **self.kwargs
+                )
+
+            self.upload_finished.emit(self.device_type, success, corrected_files, was_fixed)
 
         except Exception as e:
             try:
                 error_msg = f"Upload error: {str(e)}"
                 self.progress_update.emit(self.device_type, error_msg)
-                self.upload_finished.emit(self.device_type, False)
+                self.upload_finished.emit(self.device_type, False, [], False)
             except Exception:
                 # If even error reporting fails, just emit failure
                 try:
-                    self.upload_finished.emit(self.device_type, False)
+                    self.upload_finished.emit(self.device_type, False, [], False)
                 except Exception:
                     # Last resort - do nothing if everything fails
                     pass
@@ -642,7 +656,6 @@ class ESP32Tab(QWidget):
         self.device_type = "ESP32"
         self.firmware_files: list[tuple[str, str]] = []  # List of (address, filepath) tuples
         self.settings_manager = settings_manager
-        self.esp32_uploader = ESP32Uploader()  # Create uploader instance for chip detection
         self.init_ui()
 
     def init_ui(self):
@@ -700,14 +713,6 @@ class ESP32Tab(QWidget):
         full_build_btn = QPushButton("Full Build...")
         full_build_btn.clicked.connect(self.setup_full_build)
         quick_layout.addWidget(full_build_btn)
-
-        detect_chip_btn = QPushButton("Detect Chip & Fix Addresses")
-        detect_chip_btn.clicked.connect(self.detect_and_fix_addresses)
-        detect_chip_btn.setToolTip(
-            "Auto-detect connected ESP32 chip type and fix bootloader address\n"
-            "(ESP32-S3/C3/C6/H2 use 0x0, ESP32 Classic uses 0x1000)"
-        )
-        quick_layout.addWidget(detect_chip_btn)
 
         quick_layout.addStretch()
         file_layout.addLayout(quick_layout)
@@ -1475,144 +1480,6 @@ class ESP32Tab(QWidget):
             except Exception as e:
                 self.append_log(f"Failed to save log: {str(e)}")
 
-    def detect_and_fix_addresses(self):
-        """Auto-detect chip type from connected device and fix addresses."""
-        if not self.firmware_files:
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Information)
-            msg.setWindowTitle("No Files")
-            msg.setText("Please add firmware files first before detecting chip type.")
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg.exec()
-            return
-
-        current_port = self.get_selected_port()
-        if not current_port:
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setWindowTitle("No Port Selected")
-            msg.setText("Please select a serial port first to detect chip type.")
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg.exec()
-            return
-
-        try:
-            self.append_log("Detecting chip type from connected device...")
-            self.append_log("Tip: Press RESET button on ESP32 if prompted")
-            self.append_log("")
-
-            # Create progress callback to show detection progress
-            def progress_callback(msg: str):
-                self.append_log(msg)
-
-            # Try connection-based detection (same as upload - most reliable)
-            self.append_log("Connecting to ESP32...")
-            connected, chip_info = self.esp32_uploader._check_port_connection(
-                current_port, progress_callback
-            )
-
-            if not connected or not chip_info:
-                self.append_log("Failed to detect chip automatically")
-                msg = QMessageBox(self)
-                msg.setIcon(QMessageBox.Icon.Warning)
-                msg.setWindowTitle("Detection Failed")
-                msg.setText(
-                    "Could not detect chip type automatically.\n\n"
-                    "Possible reasons:\n"
-                    "- ESP32 is running application (try after upload/erase)\n"
-                    "- USB connection issue\n"
-                    "- Need to press RESET button\n\n"
-                    "Alternative: Manually set the address:\n"
-                    "1. Double-click 'bootloader.bin' in the list\n"
-                    "2. Change to 0x0 for ESP32-S3/C3/C6/H2\n"
-                    "3. Or keep 0x1000 for ESP32 Classic"
-                )
-                msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-                msg.exec()
-                return
-
-            if chip_info and "chip" in chip_info:
-                chip_name = chip_info["chip"].upper()
-                self.append_log(f"Detected: {chip_name}")
-
-                # Determine correct bootloader address
-                if any(variant in chip_name for variant in ["S3", "C3", "C6", "H2", "C2"]):
-                    correct_bootloader_addr = "0x0"
-                    chip_family = "ESP32-S3/C3/C6/H2"
-                else:
-                    correct_bootloader_addr = "0x1000"
-                    chip_family = "ESP32 Classic"
-
-                self.append_log(f"Chip family: {chip_family}")
-                self.append_log(f"Correct bootloader address: {correct_bootloader_addr}")
-
-                # Fix bootloader address if found
-                fixed = False
-                for i, (addr, filepath) in enumerate(self.firmware_files):
-                    filename = Path(filepath).name.lower()
-                    if "bootloader" in filename:
-                        old_addr = addr
-                        if old_addr != correct_bootloader_addr:
-                            self.firmware_files[i] = (correct_bootloader_addr, filepath)
-                            self.append_log(
-                                f"Fixed: bootloader.bin {old_addr} → {correct_bootloader_addr}"
-                            )
-                            fixed = True
-                        else:
-                            self.append_log(
-                                f"Bootloader address already correct: {correct_bootloader_addr}"
-                            )
-                        break
-
-                if fixed:
-                    self.update_file_list()
-                    self.save_settings()
-                    if self.settings_manager:
-                        self.settings_manager.save_settings()
-
-                    msg = QMessageBox(self)
-                    msg.setIcon(QMessageBox.Icon.Information)
-                    msg.setWindowTitle("Address Fixed")
-                    msg.setText(
-                        f"Detected {chip_name}\n\n"
-                        f"Bootloader address updated to {correct_bootloader_addr} for {chip_family}"
-                    )
-                    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-                    msg.exec()
-                else:
-                    msg = QMessageBox(self)
-                    msg.setIcon(QMessageBox.Icon.Information)
-                    msg.setWindowTitle("Detection Complete")
-                    msg.setText(
-                        f"Detected {chip_name}\n\nNo changes needed - addresses are correct!"
-                    )
-                    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-                    msg.exec()
-            else:
-                self.append_log("Failed to detect chip type")
-                msg = QMessageBox(self)
-                msg.setIcon(QMessageBox.Icon.Warning)
-                msg.setWindowTitle("Detection Failed")
-                msg.setText(
-                    "Could not detect chip type.\n\n"
-                    "Please check:\n"
-                    "1. ESP32 is connected to selected port\n"
-                    "2. USB cable is properly connected\n"
-                    "3. Drivers are installed"
-                )
-                msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-                msg.exec()
-
-        except Exception as e:
-            self.append_log(f"Error detecting chip: {str(e)}")
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Critical)
-            msg.setWindowTitle("Error")
-            msg.setText(f"Error detecting chip type:\n\n{str(e)}")
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg.exec()
-
-
 class MainWindow(QMainWindow):
     """Main window class."""
 
@@ -1830,7 +1697,9 @@ class MainWindow(QMainWindow):
 
         self.append_log(message, device_type)
 
-    def on_upload_finished(self, device_type: str, success: bool):
+    def on_upload_finished(
+        self, device_type: str, success: bool, corrected_files: list = None, was_fixed: bool = False
+    ):
         """Handle upload completion."""
         # Stop progress bar and re-enable buttons
         if device_type == "STM32":
@@ -1840,6 +1709,13 @@ class MainWindow(QMainWindow):
 
         if success:
             self.append_log("Upload completed successfully!", device_type)
+
+            # If ESP32 addresses were auto-fixed, update GUI and save
+            if device_type == "ESP32" and was_fixed and corrected_files:
+                self.append_log("✓ GUI updated with corrected addresses", device_type)
+                self.esp32_tab.firmware_files = corrected_files
+                self.esp32_tab.update_file_list()
+
             # Set PASS background color (dark green)
             if device_type == "STM32":
                 self.stm32_tab.set_log_background_color("#1b4332")
@@ -1903,8 +1779,11 @@ class MainWindow(QMainWindow):
 
         thread.start()
 
-    def on_erase_finished(self, device_type: str, success: bool):
+    def on_erase_finished(
+        self, device_type: str, success: bool, corrected_files: list = None, was_fixed: bool = False
+    ):
         """Handle erase completion."""
+        # Note: corrected_files and was_fixed are not used for erase operations
         # Stop progress bar and re-enable buttons
         if device_type == "STM32":
             self.stm32_tab.finish_progress(success)
