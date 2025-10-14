@@ -185,10 +185,15 @@ class STM32Uploader:
                 # Try the upload
                 success = self._execute_stm32_command(cmd, progress_callback)
                 if success:
+                    # Disconnect programmer to allow next upload without power cycle
+                    self._disconnect_programmer(port, connection_mode, progress_callback)
                     return True
                 elif attempt < retry_attempts - 1:
                     if progress_callback:
                         progress_callback(f"Upload failed, retrying... ({attempt + 1}/{retry_attempts})")
+                    # Wait a bit before retry
+                    import time
+                    time.sleep(0.5)
 
             # All attempts failed
             return False
@@ -196,6 +201,50 @@ class STM32Uploader:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             if progress_callback:
                 progress_callback(f"STM32 upload error: {str(e)}")
+            return False
+
+    def _disconnect_programmer(
+        self,
+        port: str,
+        connection_mode: str,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> bool:
+        """Disconnect STM32 programmer to allow next upload without power cycle.
+
+        This is crucial to prevent "already connected" errors on subsequent uploads.
+        Without explicit disconnect, SWD interface remains locked.
+        """
+        try:
+            cmd = [
+                self.stm32_programmer_cli,
+                "-c",
+                f"port={port}",
+                "-c",
+                f"mode={connection_mode}",
+                "--disconnect",
+            ]
+
+            if progress_callback:
+                progress_callback("Disconnecting programmer...")
+
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=5, check=False
+            )
+
+            if result.returncode == 0 or "Disconnected" in result.stdout:
+                if progress_callback:
+                    progress_callback("✓ Programmer disconnected successfully")
+                return True
+            else:
+                # Disconnect failure is not critical, just log it
+                if progress_callback:
+                    progress_callback("Note: Programmer disconnect returned non-zero code")
+                return False
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            # Disconnect errors are not critical
+            if progress_callback:
+                progress_callback(f"Note: Disconnect command issue: {str(e)}")
             return False
 
     def _execute_stm32_command(self, cmd, progress_callback):
