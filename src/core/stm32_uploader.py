@@ -133,8 +133,14 @@ class STM32Uploader:
         hardware_reset: bool = False,
         connection_speed: int = 4000,
         retry_attempts: int = 3,
+        auto_mode: bool = False,
     ) -> bool:
-        """Upload STM32 firmware."""
+        """Upload STM32 firmware.
+
+        Args:
+            auto_mode: If True, waits for MCU connection and auto-uploads.
+                      This is the "Automatic mode" from STM32CubeProgrammer.
+        """
         if not os.path.exists(firmware_path):
             if progress_callback:
                 progress_callback(f"Error: Firmware file not found: {firmware_path}")
@@ -144,6 +150,18 @@ class STM32Uploader:
             if progress_callback:
                 progress_callback("Error: STM32_Programmer_CLI not found")
             return False
+
+        # Use automatic mode if requested
+        if auto_mode:
+            return self._upload_automatic_mode(
+                firmware_path,
+                port,
+                flash_address,
+                connection_mode,
+                hardware_reset,
+                connection_speed,
+                progress_callback,
+            )
 
         try:
             # Build command with configurable options
@@ -216,6 +234,86 @@ class STM32Uploader:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             if progress_callback:
                 progress_callback(f"STM32 upload error: {str(e)}")
+            return False
+
+    def _upload_automatic_mode(
+        self,
+        firmware_path: str,
+        port: str,
+        flash_address: str,
+        connection_mode: str,
+        hardware_reset: bool,
+        connection_speed: int,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> bool:
+        """Upload firmware in automatic mode.
+
+        Automatic mode waits for MCU to be connected/powered on,
+        then automatically uploads firmware.
+
+        This mimics STM32CubeProgrammer's "Automatic mode" feature.
+
+        Workflow:
+        1. Start waiting for MCU connection
+        2. When MCU detected (power on), automatically connect
+        3. Upload firmware immediately
+        4. Wait for next MCU (loop)
+        """
+        try:
+            if progress_callback:
+                progress_callback("=" * 70)
+                progress_callback("🔄 AUTOMATIC MODE STARTED")
+                progress_callback("=" * 70)
+                progress_callback("Waiting for MCU connection...")
+                progress_callback("Connect SWD cable and power on MCU to start upload")
+                progress_callback("")
+                progress_callback("Press 'Erase Flash' button to stop automatic mode")
+                progress_callback("=" * 70)
+
+            # Build automatic mode command
+            cmd = [
+                self.stm32_programmer_cli,
+                "-c",
+                f"port={port}",
+                "-c",
+                f"mode={connection_mode}",
+            ]
+
+            # Add connection speed
+            if connection_speed != 4000:
+                cmd.extend(["-c", f"freq={connection_speed}"])
+
+            # Add hardware reset option
+            if hardware_reset:
+                cmd.extend(["-c", "reset=HWrst"])
+
+            # Add automatic mode flag
+            cmd.extend(["-autostart", "1"])  # Enable automatic mode
+
+            # Add upload command
+            cmd.extend([
+                "-w",
+                firmware_path,
+                flash_address,
+                "-v",  # Verify
+                "-s",  # Start MCU after upload
+            ])
+
+            if progress_callback:
+                progress_callback(f"Automatic mode configuration:")
+                progress_callback(f"  Firmware: {Path(firmware_path).name}")
+                progress_callback(f"  Address: {flash_address}")
+                progress_callback(f"  Port: {port}")
+                progress_callback(f"  Mode: {connection_mode}")
+                progress_callback("")
+
+            # Execute in automatic mode
+            # Note: This will keep running and waiting for connections
+            return self._execute_stm32_command(cmd, progress_callback)
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            if progress_callback:
+                progress_callback(f"Automatic mode error: {str(e)}")
             return False
 
     def _kill_lingering_processes(

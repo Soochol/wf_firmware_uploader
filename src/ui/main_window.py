@@ -175,8 +175,26 @@ class DeviceTab(QWidget):
         self.full_erase_checkbox.setToolTip("Erase entire flash memory before uploading firmware")
         layout.addWidget(self.full_erase_checkbox)
 
-        # STM32-specific Advanced Connection Settings
+        # STM32-specific options
         if self.device_type == "STM32":
+            # Automatic Mode option
+            self.auto_mode_checkbox = QCheckBox("🔄 Automatic Mode (Auto-detect & Upload)")
+            self.auto_mode_checkbox.setToolTip(
+                "Automatic mode: Waits for MCU connection and automatically uploads.\n\n"
+                "Perfect for production workflow:\n"
+                "1. Click 'Upload STM32' button\n"
+                "2. Connect SWD cable to MCU\n"
+                "3. Power on MCU\n"
+                "4. Upload starts automatically!\n"
+                "5. Replace MCU and repeat\n\n"
+                "No manual button clicking needed between MCUs."
+            )
+            self.auto_mode_checkbox.setStyleSheet(
+                "QCheckBox { font-weight: bold; color: #ff6b00; font-size: 11pt; }"
+            )
+            layout.addWidget(self.auto_mode_checkbox)
+
+            # Advanced Connection Settings
             self.init_stm32_advanced_settings(layout)
 
         # Upload controls
@@ -1567,10 +1585,17 @@ class MainWindow(QMainWindow):
 
             # Get STM32 connection settings
             stm32_connection_settings = tab.get_stm32_connection_settings()
+
+            # Check if automatic mode is enabled
+            auto_mode = False
+            if hasattr(tab, 'auto_mode_checkbox'):
+                auto_mode = tab.auto_mode_checkbox.isChecked()
+
             kwargs.update(
                 {
                     "firmware_path": file_path,
                     "port": tab.get_selected_port(),
+                    "auto_mode": auto_mode,
                     **stm32_connection_settings,
                 }
             )
