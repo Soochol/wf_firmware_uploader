@@ -111,26 +111,70 @@ class ESP32Uploader:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
 
-    def get_chip_info(self, port: str) -> Optional[dict]:
+    def get_chip_info(
+        self, port: str, progress_callback: Optional[Callable[[str], None]] = None
+    ) -> Optional[dict]:
         """Get ESP32 chip information."""
         if not self.is_esptool_available():
+            if progress_callback:
+                progress_callback("Error: esptool not available")
             return None
 
         try:
+            if progress_callback:
+                progress_callback(f"Querying chip info on {port}...")
+
             cmd = [sys.executable, "-m", "esptool", "--port", port, "chip_id"]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
 
             if result.returncode == 0:
                 info = {}
                 for line in result.stdout.split("\n"):
                     if "Chip is" in line:
-                        info["chip"] = line.split("Chip is ")[1].strip()
+                        chip_str = line.split("Chip is ")[1].strip()
+                        info["chip"] = chip_str
+                        if progress_callback:
+                            progress_callback(f"Found chip: {chip_str}")
                     elif "MAC:" in line:
                         info["mac"] = line.split("MAC: ")[1].strip()
-                return info
+
+                # Also check stderr for chip detection (esptool sometimes outputs there)
+                for line in result.stderr.split("\n"):
+                    if "Detecting chip type" in line and "chip" not in info:
+                        # Try to extract chip type from detecting message
+                        if "ESP32" in line:
+                            parts = line.split("...")
+                            if len(parts) > 1:
+                                chip_type = parts[1].strip()
+                                if chip_type:
+                                    info["chip"] = chip_type
+
+                if info:
+                    return info
+
+                if progress_callback:
+                    progress_callback("Chip detection failed: No chip info in response")
+                    progress_callback(f"stdout: {result.stdout[:200]}")
+                    progress_callback(f"stderr: {result.stderr[:200]}")
+            else:
+                if progress_callback:
+                    progress_callback(f"esptool returned error code: {result.returncode}")
+                    if result.stderr:
+                        progress_callback(f"Error: {result.stderr[:200]}")
+
             return None
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except subprocess.TimeoutExpired:
+            if progress_callback:
+                progress_callback("Error: Chip detection timed out after 15 seconds")
+            return None
+        except FileNotFoundError:
+            if progress_callback:
+                progress_callback("Error: esptool command not found")
+            return None
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"Error detecting chip: {str(e)}")
             return None
 
     def upload_firmware(

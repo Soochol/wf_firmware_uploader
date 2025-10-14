@@ -1498,7 +1498,12 @@ class ESP32Tab(QWidget):
 
         try:
             self.append_log("Detecting chip type from connected device...")
-            chip_info = self.esp32_uploader.get_chip_info(current_port)
+
+            # Create progress callback to show detection progress
+            def progress_callback(msg: str):
+                self.append_log(msg)
+
+            chip_info = self.esp32_uploader.get_chip_info(current_port, progress_callback)
 
             if chip_info and "chip" in chip_info:
                 chip_name = chip_info["chip"].upper()
