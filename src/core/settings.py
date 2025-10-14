@@ -46,6 +46,10 @@ class SettingsManager:
                 "no_sync": False,  # --before no-reset-no-sync
                 "connect_attempts": 1,
             },
+            "counters": {
+                "stm32": {"total": 0, "pass": 0, "fail": 0},
+                "esp32": {"total": 0, "pass": 0, "fail": 0},
+            },
         }
 
     def load_settings(self) -> bool:
@@ -250,3 +254,69 @@ class SettingsManager:
         ]
         if len(valid_files) != len(esp32_files):
             self.set_esp32_last_firmware_files(valid_files)
+
+    # Upload counters
+    def get_counters(self, device_type: str) -> Tuple[int, int, int]:
+        """Get upload counters for device type.
+
+        Args:
+            device_type: "stm32" or "esp32"
+
+        Returns:
+            Tuple of (total, pass, fail)
+        """
+        device_key = device_type.lower()
+        if device_key not in self.settings["counters"]:
+            return (0, 0, 0)
+
+        counters = self.settings["counters"][device_key]
+        return (
+            counters.get("total", 0),
+            counters.get("pass", 0),
+            counters.get("fail", 0),
+        )
+
+    def set_counters(self, device_type: str, total: int, passed: int, failed: int):
+        """Set upload counters for device type.
+
+        Args:
+            device_type: "stm32" or "esp32"
+            total: Total upload count
+            passed: Successful upload count
+            failed: Failed upload count
+        """
+        device_key = device_type.lower()
+        if device_key not in self.settings["counters"]:
+            self.settings["counters"][device_key] = {}
+
+        self.settings["counters"][device_key] = {
+            "total": total,
+            "pass": passed,
+            "fail": failed,
+        }
+
+    def increment_counter_pass(self, device_type: str):
+        """Increment pass counter for device type.
+
+        Args:
+            device_type: "stm32" or "esp32"
+        """
+        total, passed, failed = self.get_counters(device_type)
+        self.set_counters(device_type, total + 1, passed + 1, failed)
+
+    def increment_counter_fail(self, device_type: str):
+        """Increment fail counter for device type.
+
+        Args:
+            device_type: "stm32" or "esp32"
+        """
+        total, passed, failed = self.get_counters(device_type)
+        self.set_counters(device_type, total + 1, passed, failed + 1)
+
+    def reset_counters(self, device_type: str):
+        """Reset all counters for device type to zero.
+
+        Args:
+            device_type: "stm32" or "esp32"
+        """
+        self.set_counters(device_type, 0, 0, 0)
