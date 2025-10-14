@@ -170,6 +170,20 @@ class ESP32Uploader:
                 progress_callback("Error: No firmware files specified")
             return False
 
+        # Sort files by flash address (ascending order) for proper flashing sequence
+        # Convert hex addresses to int for sorting, then keep as strings
+        def get_address_value(addr_str):
+            """Convert hex address string to integer for sorting."""
+            try:
+                return int(addr_str, 16)
+            except ValueError:
+                return 0
+
+        files_to_upload = sorted(files_to_upload, key=lambda x: get_address_value(x[0]))
+
+        if progress_callback and len(files_to_upload) > 1:
+            progress_callback(f"Files sorted by address: {[addr for addr, _ in files_to_upload]}")
+
         # Validate all files exist
         for _, filepath in files_to_upload:
             if not os.path.exists(filepath):
