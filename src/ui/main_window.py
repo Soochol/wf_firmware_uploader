@@ -1,10 +1,9 @@
 """Main window module."""
 
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Union, cast
+from typing import Any, Optional, Union
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -41,12 +40,13 @@ class UploadWorkerThread(QThread):
     progress_update = Signal(str, str)  # device_type, message
     upload_finished = Signal(str, bool)  # device_type, success
 
-    def __init__(self, device_type, uploader, full_erase=False, **kwargs):
+    def __init__(self, device_type, uploader, full_erase=False, erase_only=False, **kwargs):
         """Initialize worker thread."""
         super().__init__()
         self.device_type = device_type
         self.uploader = uploader
         self.full_erase = full_erase
+        self.erase_only = erase_only
         self.kwargs = kwargs
 
     def run(self):
@@ -63,7 +63,7 @@ class UploadWorkerThread(QThread):
             success = True
 
             # Step 1: Full erase if requested
-            if self.full_erase:
+            if self.full_erase or self.erase_only:
                 progress_callback("Starting full flash erase...")
                 port = self.kwargs.get("port", "")
                 erase_success = self.uploader.erase_flash(port, progress_callback=progress_callback)
@@ -73,7 +73,12 @@ class UploadWorkerThread(QThread):
                     return
                 progress_callback("Flash erase completed successfully")
 
-            # Step 2: Upload firmware
+                # If erase-only mode, we're done
+                if self.erase_only:
+                    self.upload_finished.emit(self.device_type, True)
+                    return
+
+            # Step 2: Upload firmware (only if not erase-only)
             progress_callback("Starting firmware upload...")
             success = self.uploader.upload_firmware(
                 progress_callback=progress_callback, **self.kwargs
@@ -94,7 +99,6 @@ class UploadWorkerThread(QThread):
                     pass
 
 
-
 class DeviceTab(QWidget):
     """Device-specific tab widget."""
 
@@ -111,7 +115,8 @@ class DeviceTab(QWidget):
     def init_ui(self):
         """Initialize UI."""
         # Set 10pt font for all widgets except log widgets
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QLabel:not(.log-widget),
             QPushButton:not(.log-widget),
             QRadioButton, QCheckBox,
@@ -119,7 +124,8 @@ class DeviceTab(QWidget):
             QComboBox, QLineEdit {
                 font-size: 10pt;
             }
-        """)
+        """
+        )
 
         layout = QVBoxLayout(self)
 
@@ -164,7 +170,8 @@ class DeviceTab(QWidget):
 
         self.upload_btn = QPushButton(f"Upload {self.device_type}")
         self.upload_btn.setMinimumHeight(60)
-        self.upload_btn.setStyleSheet("""
+        self.upload_btn.setStyleSheet(
+            """
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
@@ -182,7 +189,8 @@ class DeviceTab(QWidget):
                 background-color: #cccccc;
                 color: #666666;
             }
-        """)
+        """
+        )
         upload_layout.addWidget(self.upload_btn)
 
         self.erase_btn = QPushButton("Erase Flash")
@@ -203,7 +211,8 @@ class DeviceTab(QWidget):
         # Device log section (moved below upload buttons)
         self.log_group = QGroupBox(f"{self.device_type} Log")
         self.log_group.setProperty("class", "log-group")  # Add CSS class
-        self.log_group.setStyleSheet("""
+        self.log_group.setStyleSheet(
+            """
             QGroupBox.log-group {
                 font-size: 12pt !important;
                 font-weight: bold !important;
@@ -217,14 +226,16 @@ class DeviceTab(QWidget):
                 left: 10px;
                 padding: 0 5px 0 5px;
             }
-        """)
+        """
+        )
         log_layout = QVBoxLayout(self.log_group)
 
         # Log controls
         log_controls = QHBoxLayout()
         self.clear_log_btn = QPushButton(f"Clear {self.device_type} Log")
         self.clear_log_btn.setProperty("class", "log-widget")  # Add CSS class
-        self.clear_log_btn.setStyleSheet("""
+        self.clear_log_btn.setStyleSheet(
+            """
             QPushButton.log-widget {
                 font-size: 10pt !important;
                 padding: 5px 10px;
@@ -236,7 +247,8 @@ class DeviceTab(QWidget):
             QPushButton.log-widget:hover {
                 background-color: #d32f2f;
             }
-        """)
+        """
+        )
         self.clear_log_btn.clicked.connect(self.clear_log)
         log_controls.addWidget(self.clear_log_btn)
 
@@ -244,7 +256,8 @@ class DeviceTab(QWidget):
 
         self.save_log_btn = QPushButton(f"Save {self.device_type} Log")
         self.save_log_btn.setProperty("class", "log-widget")  # Add CSS class
-        self.save_log_btn.setStyleSheet("""
+        self.save_log_btn.setStyleSheet(
+            """
             QPushButton.log-widget {
                 font-size: 10pt !important;
                 padding: 5px 10px;
@@ -256,7 +269,8 @@ class DeviceTab(QWidget):
             QPushButton.log-widget:hover {
                 background-color: #1976D2;
             }
-        """)
+        """
+        )
         self.save_log_btn.clicked.connect(self.save_log)
         log_controls.addWidget(self.save_log_btn)
 
@@ -267,7 +281,8 @@ class DeviceTab(QWidget):
         self.log_text.setMinimumHeight(120)
         self.log_text.setFont(QFont("Courier", 10))
         self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet("""
+        self.log_text.setStyleSheet(
+            """
             QTextEdit {
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -276,7 +291,8 @@ class DeviceTab(QWidget):
                 padding: 5px;
                 font-family: 'Courier New', monospace;
             }
-        """)
+        """
+        )
         log_layout.addWidget(self.log_text)
 
         layout.addWidget(self.log_group)
@@ -472,25 +488,25 @@ class DeviceTab(QWidget):
             return
 
         # Save connection mode
-        if hasattr(self, 'hotplug_radio') and self.hotplug_radio.isChecked():
+        if hasattr(self, "hotplug_radio") and self.hotplug_radio.isChecked():
             self.settings_manager.set_stm32_connection_mode("HOTPLUG")
-        elif hasattr(self, 'ur_radio') and self.ur_radio.isChecked():
+        elif hasattr(self, "ur_radio") and self.ur_radio.isChecked():
             self.settings_manager.set_stm32_connection_mode("UR")
-        elif hasattr(self, 'normal_radio') and self.normal_radio.isChecked():
+        elif hasattr(self, "normal_radio") and self.normal_radio.isChecked():
             self.settings_manager.set_stm32_connection_mode("Normal")
 
         # Save hardware reset
-        if hasattr(self, 'hardware_reset_checkbox'):
+        if hasattr(self, "hardware_reset_checkbox"):
             self.settings_manager.set_stm32_hardware_reset(self.hardware_reset_checkbox.isChecked())
 
         # Save connection speed
-        if hasattr(self, 'speed_combo'):
+        if hasattr(self, "speed_combo"):
             speed_text = self.speed_combo.currentText()
             speed = int(speed_text.split()[0])  # Extract number from "4000 kHz"
             self.settings_manager.set_stm32_connection_speed(speed)
 
         # Save retry attempts
-        if hasattr(self, 'retry_combo'):
+        if hasattr(self, "retry_combo"):
             retry = int(self.retry_combo.currentText())
             self.settings_manager.set_stm32_retry_attempts(retry)
 
@@ -501,7 +517,7 @@ class DeviceTab(QWidget):
 
         # Load connection mode
         mode = self.settings_manager.get_stm32_connection_mode()
-        if hasattr(self, 'hotplug_radio'):
+        if hasattr(self, "hotplug_radio"):
             if mode == "HOTPLUG":
                 self.hotplug_radio.setChecked(True)
             elif mode == "UR":
@@ -510,12 +526,12 @@ class DeviceTab(QWidget):
                 self.normal_radio.setChecked(True)
 
         # Load hardware reset
-        if hasattr(self, 'hardware_reset_checkbox'):
+        if hasattr(self, "hardware_reset_checkbox"):
             hardware_reset = self.settings_manager.get_stm32_hardware_reset()
             self.hardware_reset_checkbox.setChecked(hardware_reset)
 
         # Load connection speed
-        if hasattr(self, 'speed_combo'):
+        if hasattr(self, "speed_combo"):
             speed = self.settings_manager.get_stm32_connection_speed()
             speed_text = f"{speed} kHz"
             index = self.speed_combo.findText(speed_text)
@@ -523,7 +539,7 @@ class DeviceTab(QWidget):
                 self.speed_combo.setCurrentIndex(index)
 
         # Load retry attempts
-        if hasattr(self, 'retry_combo'):
+        if hasattr(self, "retry_combo"):
             retry = self.settings_manager.get_stm32_retry_attempts()
             retry_text = str(retry)
             index = self.retry_combo.findText(retry_text)
@@ -538,7 +554,7 @@ class DeviceTab(QWidget):
         settings = {}
 
         # Connection mode
-        if hasattr(self, 'hotplug_radio'):
+        if hasattr(self, "hotplug_radio"):
             if self.hotplug_radio.isChecked():
                 settings["connection_mode"] = "HOTPLUG"
             elif self.ur_radio.isChecked():
@@ -547,16 +563,16 @@ class DeviceTab(QWidget):
                 settings["connection_mode"] = "Normal"
 
         # Hardware reset
-        if hasattr(self, 'hardware_reset_checkbox'):
+        if hasattr(self, "hardware_reset_checkbox"):
             settings["hardware_reset"] = self.hardware_reset_checkbox.isChecked()
 
         # Connection speed
-        if hasattr(self, 'speed_combo'):
+        if hasattr(self, "speed_combo"):
             speed_text = self.speed_combo.currentText()
             settings["connection_speed"] = int(speed_text.split()[0])
 
         # Retry attempts
-        if hasattr(self, 'retry_combo'):
+        if hasattr(self, "retry_combo"):
             settings["retry_attempts"] = int(self.retry_combo.currentText())
 
         return settings
@@ -564,6 +580,7 @@ class DeviceTab(QWidget):
     def append_log(self, message: str):
         """Add message to device log."""
         from datetime import datetime
+
         current_time = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{current_time}] {message}"
 
@@ -583,7 +600,8 @@ class DeviceTab(QWidget):
 
     def set_log_background_color(self, color: str):
         """Set log background color."""
-        self.log_text.setStyleSheet(f"""
+        self.log_text.setStyleSheet(
+            f"""
             QTextEdit {{
                 background-color: {color};
                 color: #ffffff;
@@ -592,14 +610,18 @@ class DeviceTab(QWidget):
                 padding: 5px;
                 font-family: 'Courier New', monospace;
             }}
-        """)
+        """
+        )
 
     def save_log(self):
         """Save device log to file."""
         from PySide6.QtWidgets import QFileDialog
+
         file_path, _ = QFileDialog.getSaveFileName(
-            self, f"Save {self.device_type} Log", f"{self.device_type.lower()}_log.txt",
-            "Text Files (*.txt);;All Files (*)"
+            self,
+            f"Save {self.device_type} Log",
+            f"{self.device_type.lower()}_log.txt",
+            "Text Files (*.txt);;All Files (*)",
         )
         if file_path:
             try:
@@ -625,11 +647,13 @@ class ESP32Tab(QWidget):
     def init_ui(self):
         """Initialize UI."""
         # Set 12pt font for all widgets in ESP32 tab
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QLabel, QPushButton, QRadioButton, QCheckBox, QGroupBox, QComboBox {
                 font-size: 12pt;
             }
-        """)
+        """
+        )
 
         layout = QVBoxLayout(self)
 
@@ -803,7 +827,8 @@ class ESP32Tab(QWidget):
 
         self.upload_btn = QPushButton("Upload ESP32")
         self.upload_btn.setMinimumHeight(60)
-        self.upload_btn.setStyleSheet("""
+        self.upload_btn.setStyleSheet(
+            """
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
@@ -821,7 +846,8 @@ class ESP32Tab(QWidget):
                 background-color: #cccccc;
                 color: #666666;
             }
-        """)
+        """
+        )
         upload_layout.addWidget(self.upload_btn)
 
         self.erase_btn = QPushButton("Erase Flash")
@@ -840,7 +866,8 @@ class ESP32Tab(QWidget):
         guidance_font.setPointSize(10)
         self.reset_guidance_label.setFont(guidance_font)
 
-        self.reset_guidance_label.setStyleSheet("""
+        self.reset_guidance_label.setStyleSheet(
+            """
             QLabel {
                 background-color: #ff5722;
                 color: white;
@@ -851,7 +878,8 @@ class ESP32Tab(QWidget):
                 font-weight: bold;
                 box-shadow: 0px 2px 4px rgba(0,0,0,0.3);
             }
-        """)
+        """
+        )
         self.reset_guidance_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.reset_guidance_label)
 
@@ -867,7 +895,8 @@ class ESP32Tab(QWidget):
         # ESP32 log section
         self.log_group = QGroupBox("ESP32 Log")
         self.log_group.setProperty("class", "log-group")  # Add CSS class
-        self.log_group.setStyleSheet("""
+        self.log_group.setStyleSheet(
+            """
             QGroupBox.log-group {
                 font-size: 12pt !important;
                 font-weight: bold !important;
@@ -881,14 +910,16 @@ class ESP32Tab(QWidget):
                 left: 10px;
                 padding: 0 5px 0 5px;
             }
-        """)
+        """
+        )
         log_layout = QVBoxLayout(self.log_group)
 
         # Log controls
         log_controls = QHBoxLayout()
         self.clear_log_btn = QPushButton("Clear ESP32 Log")
         self.clear_log_btn.setProperty("class", "log-widget")  # Add CSS class
-        self.clear_log_btn.setStyleSheet("""
+        self.clear_log_btn.setStyleSheet(
+            """
             QPushButton.log-widget {
                 font-size: 10pt !important;
                 padding: 5px 10px;
@@ -900,7 +931,8 @@ class ESP32Tab(QWidget):
             QPushButton.log-widget:hover {
                 background-color: #d32f2f;
             }
-        """)
+        """
+        )
         self.clear_log_btn.clicked.connect(self.clear_log)
         log_controls.addWidget(self.clear_log_btn)
 
@@ -908,7 +940,8 @@ class ESP32Tab(QWidget):
 
         self.save_log_btn = QPushButton("Save ESP32 Log")
         self.save_log_btn.setProperty("class", "log-widget")  # Add CSS class
-        self.save_log_btn.setStyleSheet("""
+        self.save_log_btn.setStyleSheet(
+            """
             QPushButton.log-widget {
                 font-size: 10pt !important;
                 padding: 5px 10px;
@@ -920,7 +953,8 @@ class ESP32Tab(QWidget):
             QPushButton.log-widget:hover {
                 background-color: #1976D2;
             }
-        """)
+        """
+        )
         self.save_log_btn.clicked.connect(self.save_log)
         log_controls.addWidget(self.save_log_btn)
 
@@ -931,7 +965,8 @@ class ESP32Tab(QWidget):
         self.log_text.setMinimumHeight(120)
         self.log_text.setFont(QFont("Courier", 10))
         self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet("""
+        self.log_text.setStyleSheet(
+            """
             QTextEdit {
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -940,7 +975,8 @@ class ESP32Tab(QWidget):
                 padding: 5px;
                 font-family: 'Courier New', monospace;
             }
-        """)
+        """
+        )
         log_layout.addWidget(self.log_text)
 
         layout.addWidget(self.log_group)
@@ -1287,6 +1323,7 @@ class ESP32Tab(QWidget):
     def append_log(self, message: str):
         """Add message to ESP32 log."""
         from datetime import datetime
+
         current_time = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{current_time}] {message}"
 
@@ -1306,7 +1343,8 @@ class ESP32Tab(QWidget):
 
     def set_log_background_color(self, color: str):
         """Set log background color."""
-        self.log_text.setStyleSheet(f"""
+        self.log_text.setStyleSheet(
+            f"""
             QTextEdit {{
                 background-color: {color};
                 color: #ffffff;
@@ -1315,14 +1353,15 @@ class ESP32Tab(QWidget):
                 padding: 5px;
                 font-family: 'Courier New', monospace;
             }}
-        """)
+        """
+        )
 
     def save_log(self):
         """Save ESP32 log to file."""
         from PySide6.QtWidgets import QFileDialog
+
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save ESP32 Log", "esp32_log.txt",
-            "Text Files (*.txt);;All Files (*)"
+            self, "Save ESP32 Log", "esp32_log.txt", "Text Files (*.txt);;All Files (*)"
         )
         if file_path:
             try:
@@ -1332,6 +1371,7 @@ class ESP32Tab(QWidget):
                 self.append_log(f"Log saved to: {file_path}")
             except Exception as e:
                 self.append_log(f"Failed to save log: {str(e)}")
+
 
 class MainWindow(QMainWindow):
     """Main window class."""
@@ -1359,7 +1399,8 @@ class MainWindow(QMainWindow):
         # Tab widget
         self.tab_widget = QTabWidget()
         # Apply 12pt font to tab names
-        self.tab_widget.setStyleSheet("""
+        self.tab_widget.setStyleSheet(
+            """
             QTabWidget::tab-bar {
                 font-size: 12pt;
             }
@@ -1367,16 +1408,19 @@ class MainWindow(QMainWindow):
                 font-size: 12pt;
                 padding: 8px 16px;
             }
-        """)
+        """
+        )
 
         # STM32 tab
         self.stm32_tab = DeviceTab("STM32", "Binary Files (*.bin *.hex)", self.settings_manager)
         # Apply 12pt font only to STM32 tab
-        self.stm32_tab.setStyleSheet("""
+        self.stm32_tab.setStyleSheet(
+            """
             QLabel, QPushButton, QRadioButton, QCheckBox, QGroupBox, QComboBox, QLineEdit {
                 font-size: 12pt;
             }
-        """)
+        """
+        )
         self.stm32_tab.upload_btn.clicked.connect(lambda: self.start_upload("STM32"))
         self.stm32_tab.erase_btn.clicked.connect(lambda: self.erase_flash("STM32"))
         self.tab_widget.addTab(self.stm32_tab, "STM32")
@@ -1391,7 +1435,6 @@ class MainWindow(QMainWindow):
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
 
         layout.addWidget(self.tab_widget)
-
 
     def start_upload(self, device_type: str):
         """Start upload process."""
@@ -1417,11 +1460,13 @@ class MainWindow(QMainWindow):
 
             # Get STM32 connection settings
             stm32_connection_settings = tab.get_stm32_connection_settings()
-            kwargs.update({
-                "firmware_path": file_path,
-                "port": tab.get_selected_port(),
-                **stm32_connection_settings
-            })
+            kwargs.update(
+                {
+                    "firmware_path": file_path,
+                    "port": tab.get_selected_port(),
+                    **stm32_connection_settings,
+                }
+            )
 
         else:  # ESP32
             esp32_tab = self.esp32_tab
@@ -1533,9 +1578,12 @@ class MainWindow(QMainWindow):
         if message.startswith("STATUS:"):
             if device_type == "ESP32" and message == "STATUS:PUSH_RESET":
                 # Set ESP32 status with only "PUSH RESET !!!" in red
-                self.esp32_tab.status_label.setText('ESP32: <span style="color: red; font-weight: bold;">PUSH RESET !!!</span>')
+                status_html = (
+                    'ESP32: <span style="color: red; font-weight: bold;">' "PUSH RESET !!!</span>"
+                )
+                self.esp32_tab.status_label.setText(status_html)
                 return  # Don't add this to log
-            elif device_type == "ESP32" and message == "STATUS:CLEAR":
+            if device_type == "ESP32" and message == "STATUS:CLEAR":
                 # Restore ESP32 status to normal
                 self.esp32_tab.status_label.setText("ESP32: Ready")
                 return  # Don't add this to log
@@ -1565,6 +1613,73 @@ class MainWindow(QMainWindow):
             self.settings_manager.save_settings()
         else:
             self.append_log("Upload failed!", device_type)
+            # Set FAIL background color (dark red)
+            if device_type == "STM32":
+                self.stm32_tab.set_log_background_color("#6a040f")
+            elif device_type == "ESP32":
+                self.esp32_tab.set_log_background_color("#6a040f")
+
+        # Update status
+        if device_type == "STM32":
+            self.stm32_tab.update_status("Ready")
+        elif device_type == "ESP32":
+            self.esp32_tab.update_status("Ready")
+
+    def erase_flash(self, device_type: str):
+        """Erase flash for the specified device type."""
+        if device_type == "STM32":
+            tab = self.stm32_tab
+            uploader = self.stm32_uploader
+            # Clear STM32 log before erasing
+            self.stm32_tab.clear_log()
+            port = tab.get_selected_port()
+        else:  # ESP32
+            tab = self.esp32_tab
+            uploader = self.esp32_uploader
+            # Clear ESP32 log before erasing
+            self.esp32_tab.clear_log()
+            port = tab.get_selected_port()
+
+        if not port:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Warning")
+            msg.setText("Please select a serial port")
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+            msg.setModal(True)
+            msg.exec()
+            return
+
+        # Create erase worker thread (erase only, no upload)
+        kwargs = {"port": port}
+        thread = UploadWorkerThread(device_type, uploader, erase_only=True, **kwargs)
+        thread.progress_update.connect(self.on_progress_update)
+        thread.upload_finished.connect(self.on_erase_finished)
+
+        self.upload_threads[device_type] = thread
+        tab.start_progress()
+        tab.update_status("Erasing flash...")
+
+        thread.start()
+
+    def on_erase_finished(self, device_type: str, success: bool):
+        """Handle erase completion."""
+        # Stop progress bar and re-enable buttons
+        if device_type == "STM32":
+            self.stm32_tab.finish_progress(success)
+        elif device_type == "ESP32":
+            self.esp32_tab.finish_progress(success)
+
+        if success:
+            self.append_log("Flash erase completed successfully!", device_type)
+            # Set PASS background color (dark green)
+            if device_type == "STM32":
+                self.stm32_tab.set_log_background_color("#1b4332")
+            elif device_type == "ESP32":
+                self.esp32_tab.set_log_background_color("#1b4332")
+        else:
+            self.append_log("Flash erase failed!", device_type)
             # Set FAIL background color (dark red)
             if device_type == "STM32":
                 self.stm32_tab.set_log_background_color("#6a040f")

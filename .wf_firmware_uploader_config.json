@@ -1,10 +1,10 @@
 {
   "version": "1.0",
   "window": {
-    "x": 38,
-    "y": 87,
-    "width": 900,
-    "height": 963
+    "x": 564,
+    "y": 110,
+    "width": 907,
+    "height": 965
   },
   "ui": {
     "auto_platform_scale": true,
@@ -24,18 +24,18 @@
     "last_firmware_files": [
       [
         "0x1000",
-        "C:/myCodeRepoWindows/wf_firmware_uploader/wf_firmware_uploader/firmwares/esp32/bootloader.bin"
+        "C:/myCodeRepoWindows/PSA1.0_firmware/.pio/build/usb/bootloader.bin"
       ],
       [
         "0x10000",
-        "C:/myCodeRepoWindows/wf_firmware_uploader/wf_firmware_uploader/firmwares/esp32/firmware.bin"
+        "C:/myCodeRepoWindows/PSA1.0_firmware/.pio/build/usb/firmware.bin"
       ],
       [
         "0x8000",
-        "C:/myCodeRepoWindows/wf_firmware_uploader/wf_firmware_uploader/firmwares/esp32/partitions.bin"
+        "C:/myCodeRepoWindows/PSA1.0_firmware/.pio/build/usb/partitions.bin"
       ]
     ],
-    "last_port": "COM5",
+    "last_port": "COM4",
     "full_erase": true,
     "upload_method": "auto",
     "baud_rate": 921600,
