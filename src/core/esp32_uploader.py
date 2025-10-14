@@ -14,6 +14,53 @@ class ESP32Uploader:
         """Initialize ESP32Uploader."""
         self.esptool_cmd = "esptool.py"
 
+    def _check_bootloader_address(
+        self,
+        files_to_upload: list,
+        chip_info: dict,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ):
+        """Check if bootloader address matches the detected chip type and warn if incorrect."""
+        chip_name = chip_info.get("chip", "").upper()
+
+        # Determine expected bootloader address based on chip type
+        if any(variant in chip_name for variant in ["S3", "C3", "C6", "H2", "C2"]):
+            expected_addr = "0x0"
+            chip_family = "ESP32-S3/C3/C6/H2"
+        else:
+            expected_addr = "0x1000"
+            chip_family = "ESP32 Classic"
+
+        # Check if there's a bootloader file and its address
+        for addr, filepath in files_to_upload:
+            filename = Path(filepath).name.lower()
+            if "bootloader" in filename:
+                # Normalize addresses for comparison (remove leading zeros)
+                addr_int = int(addr, 16)
+                expected_int = int(expected_addr, 16)
+
+                if addr_int != expected_int:
+                    if progress_callback:
+                        progress_callback("=" * 70)
+                        progress_callback("⚠️  WARNING: Bootloader Address Mismatch!")
+                        progress_callback("=" * 70)
+                        progress_callback(f"Detected chip: {chip_name} ({chip_family})")
+                        progress_callback(f"Expected bootloader address: {expected_addr}")
+                        progress_callback(f"Current bootloader address: {addr}")
+                        progress_callback("")
+                        progress_callback("This may cause 'invalid header: 0xffffffff' error!")
+                        progress_callback("")
+                        progress_callback("To fix:")
+                        progress_callback("1. Cancel upload (if possible)")
+                        progress_callback("2. Double-click bootloader.bin in the file list")
+                        progress_callback(f"3. Change address to {expected_addr}")
+                        progress_callback("4. Upload again")
+                        progress_callback("=" * 70)
+                else:
+                    if progress_callback:
+                        progress_callback(f"✓ Bootloader address {addr} is correct for {chip_name}")
+                break
+
     def _check_port_accessibility(
         self, port: str, progress_callback: Optional[Callable[[str], None]] = None
     ) -> bool:
@@ -46,12 +93,17 @@ class ESP32Uploader:
 
     def _check_port_connection(
         self, port: str, progress_callback: Optional[Callable[[str], None]] = None
-    ) -> bool:
-        """Check if ESP32 is connected to the specified port."""
+    ) -> tuple[bool, Optional[dict]]:
+        """Check if ESP32 is connected to the specified port and return chip info.
+
+        Returns:
+            tuple: (success: bool, chip_info: Optional[dict])
+                   chip_info contains 'chip' and optionally 'mac' if successful
+        """
         if not port:
             if progress_callback:
                 progress_callback("Error: No port specified")
-            return False
+            return False, None
 
         try:
             if progress_callback:
@@ -63,11 +115,27 @@ class ESP32Uploader:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
 
             if result.returncode == 0:
+                # Parse chip information from output
+                chip_info = {}
+                output = result.stdout + result.stderr
+                for line in output.split("\n"):
+                    if "Chip is" in line:
+                        chip_info["chip"] = line.split("Chip is ")[1].strip()
+                    elif "Detecting chip type" in line and "chip" not in chip_info:
+                        # Alternative format
+                        parts = line.split("...")
+                        if len(parts) > 1 and "ESP32" in parts[1]:
+                            chip_info["chip"] = parts[1].strip()
+                    elif "MAC:" in line:
+                        chip_info["mac"] = line.split("MAC: ")[1].strip()
+
                 if progress_callback:
                     progress_callback("ESP32 board detected successfully")
+                    if "chip" in chip_info:
+                        progress_callback(f"Detected chip: {chip_info['chip']}")
                     # Send status clear message to restore normal status
                     progress_callback("STATUS:CLEAR")
-                return True
+                return True, chip_info if chip_info else None
             else:
                 if progress_callback:
                     if "could not open port" in result.stderr.lower():
@@ -82,7 +150,7 @@ class ESP32Uploader:
                         progress_callback(f"Error: Failed to detect ESP32 on {port}")
                     # Send status clear message to restore normal status
                     progress_callback("STATUS:CLEAR")
-                return False
+                return False, None
 
         except subprocess.TimeoutExpired:
             if progress_callback:
@@ -90,12 +158,12 @@ class ESP32Uploader:
                     f"Timeout checking ESP32 connection on {port}. Board may not be connected."
                 )
                 progress_callback("STATUS:CLEAR")
-            return False
+            return False, None
         except Exception as e:
             if progress_callback:
                 progress_callback(f"Error checking ESP32 connection: {str(e)}")
                 progress_callback("STATUS:CLEAR")
-            return False
+            return False, None
 
     def is_esptool_available(self) -> bool:
         """Check if esptool is installed."""
@@ -251,9 +319,15 @@ class ESP32Uploader:
                 files_to_upload, port, baud_rate, chip, progress_callback
             )
         else:
-            # Check port connection before auto upload
-            if not self._check_port_connection(port, progress_callback):
+            # Check port connection before auto upload and get chip info
+            connected, chip_info = self._check_port_connection(port, progress_callback)
+            if not connected:
                 return False
+
+            # Check for bootloader address mismatch and warn user
+            if chip_info and "chip" in chip_info:
+                self._check_bootloader_address(files_to_upload, chip_info, progress_callback)
+
             return self._upload_with_auto_control(
                 files_to_upload,
                 port,
@@ -554,10 +628,14 @@ class ESP32Uploader:
             return False
 
         # First, try to connect to verify ESP32 is accessible (like upload does)
-        if not self._check_port_connection(port, progress_callback):
+        connected, chip_info = self._check_port_connection(port, progress_callback)
+        if not connected:
             if progress_callback:
                 progress_callback("Failed to connect to ESP32 for erase operation")
                 progress_callback("Trying alternative connection approach...")
+        elif chip_info and "chip" in chip_info and progress_callback:
+            # Log chip info during erase
+            progress_callback(f"Chip type: {chip_info['chip']}")
 
         # Try erase with multiple attempts and progressive fallback
         for attempt in range(max(1, connect_attempts)):
