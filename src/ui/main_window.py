@@ -666,7 +666,9 @@ class ESP32Tab(QWidget):
         self.file_list.setMaximumHeight(150)
         # Increase font size for firmware file list
         self.file_list.setStyleSheet("QListWidget { font-size: 11pt; }")
-        file_layout.addWidget(QLabel("Files to upload:"))
+        # Enable editing on double-click
+        self.file_list.itemDoubleClicked.connect(self.edit_firmware_file)
+        file_layout.addWidget(QLabel("Files to upload (double-click to edit address):"))
         file_layout.addWidget(self.file_list)
 
         # File control buttons
@@ -1120,6 +1122,47 @@ class ESP32Tab(QWidget):
             self.save_settings()
             if self.settings_manager:
                 self.settings_manager.save_settings()
+
+    def edit_firmware_file(self, item):
+        """Edit the flash address of a firmware file."""
+        from PySide6.QtWidgets import QInputDialog
+
+        current_row = self.file_list.row(item)
+        if current_row >= 0:
+            old_address, filepath = self.firmware_files[current_row]
+            filename = Path(filepath).name
+
+            # Check if this is a bootloader to show helpful hint
+            is_bootloader = "bootloader" in filename.lower()
+            hint = ""
+            if is_bootloader:
+                hint = "\n\nNote: ESP32-S3/C3/C6/H2 use 0x0, ESP32 Classic uses 0x1000"
+
+            new_address, ok = QInputDialog.getText(
+                self,
+                "Edit Flash Address",
+                f"Enter new flash address for {filename}:{hint}",
+                text=old_address,
+            )
+
+            if ok and new_address:
+                # Validate hex address format
+                try:
+                    int(new_address, 16)  # Check if valid hex
+                    # Update the address
+                    self.firmware_files[current_row] = (new_address, filepath)
+                    self.update_file_list()
+                    # Auto-save settings
+                    self.save_settings()
+                    if self.settings_manager:
+                        self.settings_manager.save_settings()
+                except ValueError:
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Icon.Warning)
+                    msg.setWindowTitle("Invalid Address")
+                    msg.setText(f"Invalid hex address: {new_address}\nPlease use format: 0x1000")
+                    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    msg.exec()
 
     def remove_firmware_file(self):
         """Remove selected firmware file."""
