@@ -286,7 +286,6 @@ class CounterWidget(QGroupBox):
     """Upload statistics counter widget with TOTAL, PASS, FAIL counters."""
 
     counters_reset = Signal()  # Emitted when reset button clicked
-    export_requested = Signal()  # Emitted when export button clicked
 
     def __init__(self, device_type: str = "STM32", parent: Optional[QWidget] = None):
         """Initialize counter widget.
@@ -432,29 +431,7 @@ class CounterWidget(QGroupBox):
             """
         )
 
-        self.export_button = QPushButton("Export Log")
-        self.export_button.clicked.connect(self._on_export_clicked)
-        self.export_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #007bff;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #0056b3;
-            }
-            QPushButton:pressed {
-                background-color: #004085;
-            }
-            """
-        )
-
         button_layout.addWidget(self.reset_button)
-        button_layout.addWidget(self.export_button)
         layout.addLayout(button_layout)
 
         layout.addStretch()
@@ -546,7 +523,3 @@ class CounterWidget(QGroupBox):
         if reply == QMessageBox.StandardButton.Yes:
             self.reset_counters()
             self.counters_reset.emit()
-
-    def _on_export_clicked(self):
-        """Handle export button click."""
-        self.export_requested.emit()

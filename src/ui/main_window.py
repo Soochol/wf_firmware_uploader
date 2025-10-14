@@ -28,10 +28,10 @@ from PySide6.QtWidgets import (
 )
 
 from core.esp32_uploader import ESP32Uploader
-from core.serial_boot_controller import SerialBootController
 from core.serial_utils import SerialPortManager
 from core.settings import SettingsManager
 from core.stm32_uploader import STM32Uploader
+from ui.components import CounterWidget
 
 
 class UploadWorkerThread(QThread):
@@ -48,6 +48,14 @@ class UploadWorkerThread(QThread):
         self.full_erase = full_erase
         self.erase_only = erase_only
         self.kwargs = kwargs
+        self._stop_requested = False
+
+    def request_stop(self):
+        """Request the thread to stop."""
+        self._stop_requested = True
+        # Set stop flag in uploader if it has one
+        if hasattr(self.uploader, 'stop_flag'):
+            self.uploader.stop_flag = True
 
     def run(self):
         """Execute upload task with optional full erase."""
@@ -64,38 +72,74 @@ class UploadWorkerThread(QThread):
             corrected_files = []
             was_fixed = False
 
-            # Step 1: Full erase if requested
-            if self.full_erase or self.erase_only:
-                progress_callback("Starting full flash erase...")
-                port = self.kwargs.get("port", "")
-                erase_success = self.uploader.erase_flash(port, progress_callback=progress_callback)
-                if not erase_success:
-                    progress_callback("Flash erase failed")
+            # Check if automatic mode is enabled
+            auto_mode = self.kwargs.get("auto_mode", False)
+
+            # If automatic mode is enabled, let the uploader handle full erase
+            # Otherwise, handle full erase here (traditional workflow)
+            if auto_mode:
+                # Pass full_erase flag to uploader for automatic mode
+                # Automatic mode will handle: detect MCU -> erase (if enabled) -> upload -> repeat
+                if self.erase_only:
+                    # Erase-only doesn't make sense with automatic mode
+                    progress_callback("Erase-only mode is not compatible with automatic mode")
                     self.upload_finished.emit(self.device_type, False, [], False)
                     return
-                progress_callback("Flash erase completed successfully")
 
-                # If erase-only mode, we're done
-                if self.erase_only:
-                    self.upload_finished.emit(self.device_type, True, [], False)
-                    return
+                # Step: Upload firmware with automatic mode (includes erase if enabled)
+                progress_callback("Starting firmware upload...")
 
-            # Step 2: Upload firmware (only if not erase-only)
-            progress_callback("Starting firmware upload...")
-
-            # ESP32 uploader returns tuple with corrected files info
-            if self.device_type == "ESP32":
-                result = self.uploader.upload_firmware(
-                    progress_callback=progress_callback, **self.kwargs
-                )
-                if isinstance(result, tuple) and len(result) == 3:
-                    success, corrected_files, was_fixed = result
+                # ESP32 uploader returns tuple with corrected files info
+                if self.device_type == "ESP32":
+                    # Add full_erase to kwargs for ESP32 automatic mode only
+                    self.kwargs["full_erase"] = self.full_erase
+                    result = self.uploader.upload_firmware(
+                        progress_callback=progress_callback, **self.kwargs
+                    )
+                    if isinstance(result, tuple) and len(result) == 3:
+                        success, corrected_files, was_fixed = result
+                    else:
+                        success = result
                 else:
-                    success = result
+                    # STM32 doesn't support full_erase parameter in auto mode yet
+                    success = self.uploader.upload_firmware(
+                        progress_callback=progress_callback, **self.kwargs
+                    )
+
             else:
-                success = self.uploader.upload_firmware(
-                    progress_callback=progress_callback, **self.kwargs
-                )
+                # Traditional workflow: erase first (if requested), then upload
+                # Step 1: Full erase if requested
+                if self.full_erase or self.erase_only:
+                    progress_callback("Starting full flash erase...")
+                    port = self.kwargs.get("port", "")
+                    erase_success = self.uploader.erase_flash(port, progress_callback=progress_callback)
+                    if not erase_success:
+                        progress_callback("Flash erase failed")
+                        self.upload_finished.emit(self.device_type, False, [], False)
+                        return
+                    progress_callback("Flash erase completed successfully")
+
+                    # If erase-only mode, we're done
+                    if self.erase_only:
+                        self.upload_finished.emit(self.device_type, True, [], False)
+                        return
+
+                # Step 2: Upload firmware (only if not erase-only)
+                progress_callback("Starting firmware upload...")
+
+                # ESP32 uploader returns tuple with corrected files info
+                if self.device_type == "ESP32":
+                    result = self.uploader.upload_firmware(
+                        progress_callback=progress_callback, **self.kwargs
+                    )
+                    if isinstance(result, tuple) and len(result) == 3:
+                        success, corrected_files, was_fixed = result
+                    else:
+                        success = result
+                else:
+                    success = self.uploader.upload_firmware(
+                        progress_callback=progress_callback, **self.kwargs
+                    )
 
             self.upload_finished.emit(self.device_type, success, corrected_files, was_fixed)
 
@@ -124,6 +168,7 @@ class DeviceTab(QWidget):
         self.device_type = device_type
         self.file_filter = file_filter
         self.settings_manager = settings_manager
+        self.counter_widget = None  # Will be initialized in init_ui
         self.init_ui()
 
     def init_ui(self):
@@ -143,6 +188,14 @@ class DeviceTab(QWidget):
 
         layout = QVBoxLayout(self)
 
+        # === TOP ROW: 2-COLUMN LAYOUT (Firmware Upload | Counter) ===
+        top_row_layout = QHBoxLayout()
+
+        # LEFT COLUMN: Firmware Upload Section (60% width)
+        upload_container = QWidget()
+        upload_layout = QVBoxLayout(upload_container)
+        upload_layout.setContentsMargins(0, 0, 0, 0)
+
         # File selection group
         file_group = QGroupBox(f"{self.device_type} Firmware File")
         file_layout = QHBoxLayout(file_group)
@@ -155,7 +208,7 @@ class DeviceTab(QWidget):
         browse_btn.clicked.connect(self.browse_file)
         file_layout.addWidget(browse_btn)
 
-        layout.addWidget(file_group)
+        upload_layout.addWidget(file_group)
 
         # Port selection
         port_layout = QHBoxLayout()
@@ -168,17 +221,17 @@ class DeviceTab(QWidget):
         refresh_btn.clicked.connect(self.refresh_ports)
         port_layout.addWidget(refresh_btn)
 
-        layout.addLayout(port_layout)
+        upload_layout.addLayout(port_layout)
 
         # Full Erase option
         self.full_erase_checkbox = QCheckBox("Full Erase before Upload")
         self.full_erase_checkbox.setToolTip("Erase entire flash memory before uploading firmware")
-        layout.addWidget(self.full_erase_checkbox)
+        upload_layout.addWidget(self.full_erase_checkbox)
 
         # STM32-specific options
         if self.device_type == "STM32":
             # Automatic Mode option
-            self.auto_mode_checkbox = QCheckBox("🔄 Automatic Mode (Auto-detect & Upload)")
+            self.auto_mode_checkbox = QCheckBox("Automatic Mode")
             self.auto_mode_checkbox.setToolTip(
                 "Automatic mode: Waits for MCU connection and automatically uploads.\n\n"
                 "Perfect for production workflow:\n"
@@ -192,13 +245,34 @@ class DeviceTab(QWidget):
             self.auto_mode_checkbox.setStyleSheet(
                 "QCheckBox { font-weight: bold; color: #ff6b00; font-size: 11pt; }"
             )
-            layout.addWidget(self.auto_mode_checkbox)
+            upload_layout.addWidget(self.auto_mode_checkbox)
 
-            # Advanced Connection Settings
+        upload_layout.addStretch()  # Push content to top
+
+        # RIGHT COLUMN: Counter Widget (40% width)
+        self.counter_widget = CounterWidget(device_type=self.device_type)
+        # Load saved counters
+        if self.settings_manager:
+            total, passed, failed = self.settings_manager.get_counters(self.device_type)
+            self.counter_widget.set_counters(total, passed, failed)
+
+        # Connect counter signals
+        self.counter_widget.counters_reset.connect(self.on_counters_reset)
+
+        # Add to top row with stretch factors (60/40 split)
+        top_row_layout.addWidget(upload_container, 60)
+        top_row_layout.addWidget(self.counter_widget, 40)
+
+        layout.addLayout(top_row_layout)
+
+        # === BOTTOM SECTION: 1-COLUMN LAYOUT ===
+
+        # STM32 Advanced Connection Settings
+        if self.device_type == "STM32":
             self.init_stm32_advanced_settings(layout)
 
         # Upload controls
-        upload_layout = QHBoxLayout()
+        upload_buttons_layout = QHBoxLayout()
 
         self.upload_btn = QPushButton(f"Upload {self.device_type}")
         self.upload_btn.setMinimumHeight(60)
@@ -223,13 +297,13 @@ class DeviceTab(QWidget):
             }
         """
         )
-        upload_layout.addWidget(self.upload_btn)
+        upload_buttons_layout.addWidget(self.upload_btn)
 
         self.erase_btn = QPushButton("Erase Flash")
         self.erase_btn.setMinimumHeight(60)
-        upload_layout.addWidget(self.erase_btn)
+        upload_buttons_layout.addWidget(self.erase_btn)
 
-        layout.addLayout(upload_layout)
+        layout.addLayout(upload_buttons_layout)
 
         # Progress
         self.progress_bar = QProgressBar()
@@ -327,9 +401,7 @@ class DeviceTab(QWidget):
         )
         log_layout.addWidget(self.log_text)
 
-        layout.addWidget(self.log_group)
-
-        layout.addStretch()
+        layout.addWidget(self.log_group, stretch=1)
 
         # Initialize ports
         self.refresh_ports()
@@ -425,6 +497,11 @@ class DeviceTab(QWidget):
             full_erase = self.settings_manager.get_stm32_full_erase()
             self.full_erase_checkbox.setChecked(full_erase)
 
+            # Load automatic mode setting
+            if hasattr(self, 'auto_mode_checkbox'):
+                auto_mode = self.settings_manager.get_stm32_auto_mode()
+                self.auto_mode_checkbox.setChecked(auto_mode)
+
             # Load STM32 advanced settings
             self.load_stm32_advanced_settings()
 
@@ -445,6 +522,10 @@ class DeviceTab(QWidget):
 
             # Save full erase setting
             self.settings_manager.set_stm32_full_erase(self.is_full_erase_enabled())
+
+            # Save automatic mode setting
+            if hasattr(self, 'auto_mode_checkbox'):
+                self.settings_manager.set_stm32_auto_mode(self.auto_mode_checkbox.isChecked())
 
             # Save STM32 advanced settings
             self.save_stm32_advanced_settings()
@@ -664,6 +745,14 @@ class DeviceTab(QWidget):
             except Exception as e:
                 self.append_log(f"Failed to save log: {str(e)}")
 
+    def on_counters_reset(self):
+        """Handle counter reset signal."""
+        # Save reset counters to settings
+        if self.settings_manager:
+            self.settings_manager.reset_counters(self.device_type)
+            self.settings_manager.save_settings()
+        self.append_log(f"{self.device_type} counters reset")
+
 
 class ESP32Tab(QWidget):
     """ESP32-specific tab with multi-file support."""
@@ -674,6 +763,7 @@ class ESP32Tab(QWidget):
         self.device_type = "ESP32"
         self.firmware_files: list[tuple[str, str]] = []  # List of (address, filepath) tuples
         self.settings_manager = settings_manager
+        self.counter_widget = None  # Will be initialized in init_ui
         self.init_ui()
 
     def init_ui(self):
@@ -688,6 +778,9 @@ class ESP32Tab(QWidget):
         )
 
         layout = QVBoxLayout(self)
+
+        # === TOP ROW: 2-COLUMN LAYOUT (Firmware Files | Counter) ===
+        top_row_layout = QHBoxLayout()
 
         # Multi-file selection group
         file_group = QGroupBox("ESP32 Firmware Files")
@@ -735,126 +828,159 @@ class ESP32Tab(QWidget):
         quick_layout.addStretch()
         file_layout.addLayout(quick_layout)
 
-        layout.addWidget(file_group)
+        # Add file_group to top row (LEFT COLUMN - 60% width)
+        top_row_layout.addWidget(file_group, 60)
 
-        # Port selection
-        port_layout = QHBoxLayout()
-        port_layout.addWidget(QLabel("Serial Port:"))
+        # RIGHT COLUMN: Counter Widget (40% width)
+        self.counter_widget = CounterWidget(device_type=self.device_type)
+        # Load saved counters
+        if self.settings_manager:
+            total, passed, failed = self.settings_manager.get_counters(self.device_type)
+            self.counter_widget.set_counters(total, passed, failed)
 
+        # Connect counter signals
+        self.counter_widget.counters_reset.connect(self.on_counters_reset)
+
+        top_row_layout.addWidget(self.counter_widget, 40)
+
+        layout.addLayout(top_row_layout)
+
+        # ============================================================
+        # UNIFIED ESP32 SETTINGS CARD (3-COLUMN LAYOUT)
+        # ============================================================
+        settings_group = QGroupBox("ESP32 Settings")
+        settings_group.setStyleSheet(
+            """
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #dee2e6;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 15px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """
+        )
+        settings_layout = QVBoxLayout(settings_group)
+
+        # 3-column layout for all settings
+        three_column_layout = QHBoxLayout()
+
+        # ============================================================
+        # COLUMN 1: Port & Baud Rate (33% width)
+        # ============================================================
+        column1 = QVBoxLayout()
+
+        # Serial Port
+        port_label = QLabel("Serial Port")
+        port_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        column1.addWidget(port_label)
+
+        port_row = QHBoxLayout()
         self.port_combo = QComboBox()
-        port_layout.addWidget(self.port_combo)
+        port_row.addWidget(self.port_combo, stretch=3)
 
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_ports)
-        port_layout.addWidget(refresh_btn)
+        port_row.addWidget(refresh_btn, stretch=1)
+        column1.addLayout(port_row)
 
-        layout.addLayout(port_layout)
+        column1.addSpacing(10)
 
-        # Upload method selection
-        method_group = QGroupBox("Upload Method")
-        method_layout = QVBoxLayout(method_group)
-
-        self.upload_method_group = QButtonGroup()
-
-        self.auto_method_radio = QRadioButton("Auto (ESP32 Prog Module)")
-        self.auto_method_radio.setChecked(True)
-        self.auto_method_radio.setToolTip(
-            "Use automatic reset/boot control (standard ESP32 development boards)"
-        )
-        method_layout.addWidget(self.auto_method_radio)
-        self.upload_method_group.addButton(self.auto_method_radio, 0)
-
-        self.manual_method_radio = QRadioButton("Manual CTS/RTS Control (TTL-RS232)")
-        self.manual_method_radio.setToolTip(
-            "Use DTR/RTS signals for manual boot control (TTL-RS232 modules)"
-        )
-        method_layout.addWidget(self.manual_method_radio)
-        self.upload_method_group.addButton(self.manual_method_radio, 1)
-
-        # Manual control options (initially hidden)
-        self.manual_control_widget = QWidget()
-        manual_control_layout = QVBoxLayout(self.manual_control_widget)
-        manual_control_layout.setContentsMargins(20, 5, 5, 5)  # Indent
-
-        info_label = QLabel("TTL-RS232 Connection:")
-        info_label.setStyleSheet("color: #666; font-size: 10px;")
-        manual_control_layout.addWidget(info_label)
-
-        connection_info = QLabel("DTR → GPIO0, RTS → EN/RST")
-        connection_info.setStyleSheet("color: #666; font-size: 10px; font-family: monospace;")
-        manual_control_layout.addWidget(connection_info)
-
-        # Test button for manual control
-        test_layout = QHBoxLayout()
-        self.test_control_btn = QPushButton("Test DTR/RTS Control")
-        self.test_control_btn.clicked.connect(self.test_manual_control)
-        test_layout.addWidget(self.test_control_btn)
-        test_layout.addStretch()
-        manual_control_layout.addLayout(test_layout)
-
-        method_layout.addWidget(self.manual_control_widget)
-        self.manual_control_widget.setVisible(False)
-
-        # Connect radio button changes
-        self.manual_method_radio.toggled.connect(self.on_upload_method_changed)
-
-        layout.addWidget(method_group)
-
-        # Full Erase option
-        self.full_erase_checkbox = QCheckBox("Full Erase before Upload")
-        self.full_erase_checkbox.setToolTip("Erase entire flash memory before uploading firmware")
-        layout.addWidget(self.full_erase_checkbox)
-
-        # Advanced settings group
-        advanced_group = QGroupBox("Advanced Settings")
-        advanced_layout = QVBoxLayout(advanced_group)
-
-        # Baud rate selection
-        baud_layout = QHBoxLayout()
-        baud_layout.addWidget(QLabel("Baud Rate:"))
+        # Baud Rate
+        baud_label = QLabel("Baud Rate")
+        baud_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        column1.addWidget(baud_label)
 
         self.baud_combo = QComboBox()
         self.baud_combo.addItems(["115200", "230400", "460800", "921600"])
         self.baud_combo.setCurrentText("921600")
         self.baud_combo.currentTextChanged.connect(self.on_settings_changed)
-        baud_layout.addWidget(self.baud_combo)
-        baud_layout.addStretch()
-        advanced_layout.addLayout(baud_layout)
+        column1.addWidget(self.baud_combo)
 
-        # Connection options
-        connection_label = QLabel("Connection Options:")
-        connection_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
-        advanced_layout.addWidget(connection_label)
+        column1.addStretch()
 
-        self.before_reset_checkbox = QCheckBox("Reset before connection (--before default-reset)")
+        # ============================================================
+        # COLUMN 2: Full Erase & Connection Options (34% width)
+        # ============================================================
+        column2 = QVBoxLayout()
+
+        # Full Erase
+        self.full_erase_checkbox = QCheckBox("Full Erase")
+        self.full_erase_checkbox.setToolTip("Erase entire flash memory before uploading firmware")
+        self.full_erase_checkbox.setStyleSheet("font-weight: bold; margin-bottom: 10px;")
+        column2.addWidget(self.full_erase_checkbox)
+
+        # Connection Options
+        connection_label = QLabel("Connection Options")
+        connection_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        column2.addWidget(connection_label)
+
+        self.before_reset_checkbox = QCheckBox("Reset before")
+        self.before_reset_checkbox.setToolTip("--before default-reset")
         self.before_reset_checkbox.setChecked(True)
         self.before_reset_checkbox.toggled.connect(self.on_settings_changed)
-        advanced_layout.addWidget(self.before_reset_checkbox)
+        column2.addWidget(self.before_reset_checkbox)
 
-        self.after_reset_checkbox = QCheckBox("Reset after upload (--after hard-reset)")
+        self.after_reset_checkbox = QCheckBox("Reset after")
+        self.after_reset_checkbox.setToolTip("--after hard-reset")
         self.after_reset_checkbox.setChecked(True)
         self.after_reset_checkbox.toggled.connect(self.on_settings_changed)
-        advanced_layout.addWidget(self.after_reset_checkbox)
+        column2.addWidget(self.after_reset_checkbox)
 
-        self.no_sync_checkbox = QCheckBox("Use no-sync mode (--before no-reset-no-sync)")
+        self.no_sync_checkbox = QCheckBox("No-sync mode")
+        self.no_sync_checkbox.setToolTip("--before no-reset-no-sync")
         self.no_sync_checkbox.setChecked(False)
         self.no_sync_checkbox.toggled.connect(self.on_no_sync_changed)
         self.no_sync_checkbox.toggled.connect(self.on_settings_changed)
-        advanced_layout.addWidget(self.no_sync_checkbox)
+        column2.addWidget(self.no_sync_checkbox)
 
-        # Connect attempts
-        attempts_layout = QHBoxLayout()
-        attempts_layout.addWidget(QLabel("Connection Attempts:"))
+        column2.addStretch()
+
+        # ============================================================
+        # COLUMN 3: Automatic Mode & Connection Attempts (33% width)
+        # ============================================================
+        column3 = QVBoxLayout()
+
+        # Automatic Mode
+        self.auto_mode_checkbox = QCheckBox("Automatic Mode")
+        self.auto_mode_checkbox.setToolTip(
+            "Automatic mode: Waits for ESP32 connection and automatically uploads.\n\n"
+            "Perfect for production workflow:\n"
+            "1. Click 'Upload ESP32' button\n"
+            "2. Connect USB cable to ESP32\n"
+            "3. Power on ESP32\n"
+            "4. Upload starts automatically!\n"
+            "5. Replace ESP32 and repeat\n\n"
+            "No manual button clicking needed between boards."
+        )
+        self.auto_mode_checkbox.setStyleSheet("font-weight: bold; color: #ff6b00; margin-bottom: 10px;")
+        column3.addWidget(self.auto_mode_checkbox)
+
+        # Connection Attempts
+        attempts_label = QLabel("Connection Attempts")
+        attempts_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        column3.addWidget(attempts_label)
 
         self.connect_attempts_combo = QComboBox()
         self.connect_attempts_combo.addItems(["1", "3", "5", "10"])
         self.connect_attempts_combo.setCurrentText("1")
         self.connect_attempts_combo.currentTextChanged.connect(self.on_settings_changed)
-        attempts_layout.addWidget(self.connect_attempts_combo)
-        attempts_layout.addStretch()
-        advanced_layout.addLayout(attempts_layout)
+        column3.addWidget(self.connect_attempts_combo)
 
-        layout.addWidget(advanced_group)
+        column3.addStretch()
+
+        # Add all columns to 3-column layout
+        three_column_layout.addLayout(column1, 33)
+        three_column_layout.addLayout(column2, 34)
+        three_column_layout.addLayout(column3, 33)
+
+        settings_layout.addLayout(three_column_layout)
+        layout.addWidget(settings_group)
 
         # Upload controls
         upload_layout = QHBoxLayout()
@@ -1013,9 +1139,7 @@ class ESP32Tab(QWidget):
         )
         log_layout.addWidget(self.log_text)
 
-        layout.addWidget(self.log_group)
-
-        layout.addStretch()
+        layout.addWidget(self.log_group, stretch=1)
 
         # Initialize ports
         self.refresh_ports()
@@ -1301,13 +1425,10 @@ class ESP32Tab(QWidget):
         full_erase = self.settings_manager.get_esp32_full_erase()
         self.full_erase_checkbox.setChecked(full_erase)
 
-        # Load upload method setting
-        upload_method = self.settings_manager.get_esp32_upload_method()
-        if upload_method == "manual":
-            self.manual_method_radio.setChecked(True)
-        else:
-            self.auto_method_radio.setChecked(True)
-        self.on_upload_method_changed(self.manual_method_radio.isChecked())
+        # Load automatic mode setting
+        if hasattr(self, 'auto_mode_checkbox'):
+            auto_mode = self.settings_manager.get_esp32_auto_mode()
+            self.auto_mode_checkbox.setChecked(auto_mode)
 
         # Load advanced settings
         baud_rate = self.settings_manager.get_esp32_baud_rate()
@@ -1342,8 +1463,9 @@ class ESP32Tab(QWidget):
         # Save full erase setting
         self.settings_manager.set_esp32_full_erase(self.is_full_erase_enabled())
 
-        # Save upload method setting
-        self.settings_manager.set_esp32_upload_method(self.get_upload_method())
+        # Save automatic mode setting
+        if hasattr(self, 'auto_mode_checkbox'):
+            self.settings_manager.set_esp32_auto_mode(self.auto_mode_checkbox.isChecked())
 
         # Save advanced settings
         self.settings_manager.set_esp32_baud_rate(int(self.baud_combo.currentText()))
@@ -1353,64 +1475,6 @@ class ESP32Tab(QWidget):
         self.settings_manager.set_esp32_connect_attempts(
             int(self.connect_attempts_combo.currentText())
         )
-
-    def get_upload_method(self) -> str:
-        """Get selected upload method.
-
-        Returns:
-            'auto' or 'manual'
-        """
-        return "manual" if self.manual_method_radio.isChecked() else "auto"
-
-    def on_upload_method_changed(self, _checked: bool):
-        """Handle upload method radio button change."""
-        self.manual_control_widget.setVisible(self.manual_method_radio.isChecked())
-
-    def test_manual_control(self):
-        """Test manual DTR/RTS control."""
-
-        port = self.get_selected_port()
-        if not port:
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setWindowTitle("Warning")
-            msg.setText("Please select a serial port first")
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg.exec()
-            return
-
-        def show_result(title: str, message: str, success: bool):
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Information if success else QMessageBox.Icon.Warning)
-            msg.setWindowTitle(title)
-            msg.setText(message)
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg.exec()
-
-        try:
-            controller = SerialBootController(port)
-
-            # Test connection
-            if controller.test_connection():
-                show_result(
-                    "Test Successful",
-                    f"DTR/RTS control signals tested successfully on {port}\n\n"
-                    + controller.get_signal_mapping_info(),
-                    True,
-                )
-            else:
-                show_result(
-                    "Test Failed",
-                    f"Failed to control DTR/RTS signals on {port}\n\n"
-                    "Please check:\n"
-                    "1. Serial port connection\n"
-                    "2. TTL-RS232 module supports DTR/RTS\n"
-                    "3. Correct wiring (DTR→GPIO0, RTS→EN)",
-                    False,
-                )
-
-        except Exception as e:
-            show_result("Test Error", f"Error testing control signals: {str(e)}", False)
 
     def on_settings_changed(self):
         """Handle settings change - auto-save settings."""
@@ -1497,6 +1561,14 @@ class ESP32Tab(QWidget):
                 self.append_log(f"Log saved to: {file_path}")
             except Exception as e:
                 self.append_log(f"Failed to save log: {str(e)}")
+
+    def on_counters_reset(self):
+        """Handle counter reset signal."""
+        # Save reset counters to settings
+        if self.settings_manager:
+            self.settings_manager.reset_counters(self.device_type)
+            self.settings_manager.save_settings()
+        self.append_log(f"{self.device_type} counters reset")
 
 class MainWindow(QMainWindow):
     """Main window class."""
@@ -1621,11 +1693,16 @@ class MainWindow(QMainWindow):
             # Get connection settings
             connection_settings = esp32_tab.get_connection_settings()
 
+            # Check if automatic mode is enabled
+            auto_mode = False
+            if hasattr(esp32_tab, 'auto_mode_checkbox'):
+                auto_mode = esp32_tab.auto_mode_checkbox.isChecked()
+
             kwargs.update(
                 {
                     "firmware_files": firmware_files,
                     "port": esp32_tab.get_selected_port(),
-                    "upload_method": esp32_tab.get_upload_method(),
+                    "auto_mode": auto_mode,
                     **connection_settings,
                 }
             )
@@ -1720,6 +1797,29 @@ class MainWindow(QMainWindow):
                 self.esp32_tab.status_label.setText("ESP32: Ready")
                 return  # Don't add this to log
 
+        # Handle special counter increment messages
+        if message.startswith("COUNTER:"):
+            if message == "COUNTER:INCREMENT_PASS":
+                if device_type == "STM32" and self.stm32_tab.counter_widget:
+                    self.stm32_tab.counter_widget.increment_pass()
+                    self.settings_manager.increment_counter_pass(device_type)
+                    self.settings_manager.save_settings()
+                elif device_type == "ESP32" and self.esp32_tab.counter_widget:
+                    self.esp32_tab.counter_widget.increment_pass()
+                    self.settings_manager.increment_counter_pass(device_type)
+                    self.settings_manager.save_settings()
+                return  # Don't add this to log
+            elif message == "COUNTER:INCREMENT_FAIL":
+                if device_type == "STM32" and self.stm32_tab.counter_widget:
+                    self.stm32_tab.counter_widget.increment_fail()
+                    self.settings_manager.increment_counter_fail(device_type)
+                    self.settings_manager.save_settings()
+                elif device_type == "ESP32" and self.esp32_tab.counter_widget:
+                    self.esp32_tab.counter_widget.increment_fail()
+                    self.settings_manager.increment_counter_fail(device_type)
+                    self.settings_manager.save_settings()
+                return  # Don't add this to log
+
         self.append_log(message, device_type)
 
     def on_upload_finished(
@@ -1734,6 +1834,18 @@ class MainWindow(QMainWindow):
 
         if success:
             self.append_log("Upload completed successfully!", device_type)
+
+            # Increment PASS counter
+            if device_type == "STM32" and self.stm32_tab.counter_widget:
+                self.stm32_tab.counter_widget.increment_pass()
+                # Save counter to settings
+                self.settings_manager.increment_counter_pass(device_type)
+                self.settings_manager.save_settings()
+            elif device_type == "ESP32" and self.esp32_tab.counter_widget:
+                self.esp32_tab.counter_widget.increment_pass()
+                # Save counter to settings
+                self.settings_manager.increment_counter_pass(device_type)
+                self.settings_manager.save_settings()
 
             # If ESP32 addresses were auto-fixed, update GUI and save
             if device_type == "ESP32" and was_fixed and corrected_files:
@@ -1754,6 +1866,19 @@ class MainWindow(QMainWindow):
             self.settings_manager.save_settings()
         else:
             self.append_log("Upload failed!", device_type)
+
+            # Increment FAIL counter
+            if device_type == "STM32" and self.stm32_tab.counter_widget:
+                self.stm32_tab.counter_widget.increment_fail()
+                # Save counter to settings
+                self.settings_manager.increment_counter_fail(device_type)
+                self.settings_manager.save_settings()
+            elif device_type == "ESP32" and self.esp32_tab.counter_widget:
+                self.esp32_tab.counter_widget.increment_fail()
+                # Save counter to settings
+                self.settings_manager.increment_counter_fail(device_type)
+                self.settings_manager.save_settings()
+
             # Set FAIL background color (dark red)
             if device_type == "STM32":
                 self.stm32_tab.set_log_background_color("#6a040f")
@@ -1843,4 +1968,19 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Handle application close event."""
         self.save_settings()
+
+        # Stop all running upload threads
+        for device_type, thread in self.upload_threads.items():
+            if thread.isRunning():
+                thread.request_stop()
+
+        # Wait for threads to finish (with timeout)
+        for device_type, thread in self.upload_threads.items():
+            if thread.isRunning():
+                thread.wait(2000)  # Wait up to 2 seconds
+                if thread.isRunning():
+                    # Force terminate if still running
+                    thread.terminate()
+                    thread.wait()
+
         super().closeEvent(event)

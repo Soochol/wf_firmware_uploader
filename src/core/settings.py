@@ -30,6 +30,7 @@ class SettingsManager:
                 "last_port": "SWD",
                 "flash_address": "0x08000000",
                 "full_erase": False,
+                "auto_mode": False,  # Automatic mode for production workflow
                 "connection_mode": "HOTPLUG",  # HOTPLUG, UR, Normal
                 "hardware_reset": False,
                 "connection_speed": 4000,  # kHz
@@ -39,7 +40,7 @@ class SettingsManager:
                 "last_firmware_files": [],  # List of [address, filepath] pairs
                 "last_port": "",
                 "full_erase": False,
-                "upload_method": "auto",  # "auto" or "manual"
+                "auto_mode": False,  # Automatic mode for production workflow
                 "baud_rate": 921600,
                 "before_reset": True,  # --before default-reset
                 "after_reset": True,  # --after hard-reset
@@ -162,6 +163,14 @@ class SettingsManager:
         """Set STM32 retry attempts setting."""
         self.settings["stm32"]["retry_attempts"] = max(1, attempts)
 
+    def get_stm32_auto_mode(self) -> bool:
+        """Get STM32 automatic mode setting."""
+        return self.settings["stm32"].get("auto_mode", False)
+
+    def set_stm32_auto_mode(self, enabled: bool):
+        """Set STM32 automatic mode setting."""
+        self.settings["stm32"]["auto_mode"] = enabled
+
     # ESP32 settings
     def get_esp32_last_firmware_files(self) -> List[Tuple[str, str]]:
         """Get last ESP32 firmware files as list of (address, filepath) tuples."""
@@ -186,14 +195,6 @@ class SettingsManager:
     def set_esp32_full_erase(self, enabled: bool):
         """Set ESP32 full erase setting."""
         self.settings["esp32"]["full_erase"] = enabled
-
-    def get_esp32_upload_method(self) -> str:
-        """Get ESP32 upload method setting."""
-        return self.settings["esp32"]["upload_method"]
-
-    def set_esp32_upload_method(self, method: str):
-        """Set ESP32 upload method setting."""
-        self.settings["esp32"]["upload_method"] = method
 
     def get_esp32_baud_rate(self) -> int:
         """Get ESP32 baud rate setting."""
@@ -234,6 +235,14 @@ class SettingsManager:
     def set_esp32_connect_attempts(self, attempts: int):
         """Set ESP32 connect attempts setting."""
         self.settings["esp32"]["connect_attempts"] = max(1, attempts)
+
+    def get_esp32_auto_mode(self) -> bool:
+        """Get ESP32 automatic mode setting."""
+        return self.settings["esp32"].get("auto_mode", False)
+
+    def set_esp32_auto_mode(self, enabled: bool):
+        """Set ESP32 automatic mode setting."""
+        self.settings["esp32"]["auto_mode"] = enabled
 
     # Validation helpers
     def validate_file_exists(self, filepath: str) -> bool:

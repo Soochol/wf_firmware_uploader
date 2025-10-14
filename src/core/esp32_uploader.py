@@ -13,6 +13,7 @@ class ESP32Uploader:
     def __init__(self):
         """Initialize ESP32Uploader."""
         self.esptool_cmd = "esptool.py"
+        self.stop_flag = False
 
     def _check_bootloader_address(
         self,
@@ -65,35 +66,333 @@ class ESP32Uploader:
 
         return corrected_files, was_fixed
 
-    def _check_port_accessibility(
-        self, port: str, progress_callback: Optional[Callable[[str], None]] = None
+    def _check_esp32_data(
+        self,
+        ser,
+        wait_for_power_on: bool = False,
+        progress_callback: Optional[Callable[[str], None]] = None,
     ) -> bool:
-        """Check if serial port is accessible without ESP32 communication."""
-        if not port:
-            if progress_callback:
-                progress_callback("Error: No port specified")
-            return False
+        """Check if ESP32 is powered on by monitoring serial data.
 
+        Args:
+            ser: Open serial port object (kept open throughout automatic mode)
+            wait_for_power_on: If True, wait for incoming data (MCU power-on detection).
+                              If False, check if data stopped (MCU power-off detection).
+            progress_callback: Optional callback for debug messages
+
+        This method monitors an already-opened serial port:
+        1. wait_for_power_on=True: Wait for data from MCU bootloader (power-on)
+        2. wait_for_power_on=False: Check if data flow stopped (power-off)
+
+        Production workflow: Port stays open, monitor data flow to detect MCU power cycles.
+        """
         try:
-            import serial
+            import time
 
+            if wait_for_power_on:
+                # MODE 1: Waiting for NEW MCU to power on
+                # Monitor for NEW incoming serial data (MCU bootloader sends data on boot)
+                # IMPORTANT: We need to detect FRESH data, not leftover data
+
+                # First, check if there's any data waiting
+                waiting = ser.in_waiting
+
+                if waiting > 0:
+                    # Read and check if this is bootloader data (not app data)
+                    data = ser.read(waiting)
+
+                    # ESP32 bootloader sends specific patterns on boot
+                    # Look for bootloader markers like "rst:", "boot:", "ets", etc.
+                    data_str = str(data)
+                    is_bootloader = any(marker in data_str for marker in [
+                        'rst:', 'boot:', 'ets', 'waiting for download', 'ESP-ROM'
+                    ])
+
+                    if is_bootloader:
+                        if progress_callback:
+                            progress_callback(
+                                f"DEBUG: Detected bootloader data ({len(data)} bytes) - New MCU!"
+                            )
+                        return True
+                    else:
+                        # Application data - ignore and clear
+                        if progress_callback:
+                            progress_callback(f"DEBUG: Ignoring app data ({len(data)} bytes)")
+                        return False
+
+                # No data = MCU not powered yet
+                return False
+
+            else:
+                # MODE 2: Waiting for current MCU to power off
+                # Check CTS (Clear To Send) signal - typically goes LOW when MCU powers off
+                try:
+                    # Check modem status lines (CTS/DSR)
+                    # When MCU powers off, these signals may change
+                    cts = ser.getCTS() if hasattr(ser, 'getCTS') else None
+                    dsr = ser.getDSR() if hasattr(ser, 'getDSR') else None
+
+                    # If both CTS and DSR are False, MCU likely powered off
+                    if cts is False and dsr is False:
+                        if progress_callback:
+                            progress_callback("DEBUG: CTS/DSR low - MCU powered off")
+                        return False
+
+                    # Also check for data - if bootloader was running and now silent
+                    # Clear old data first
+                    if ser.in_waiting > 0:
+                        ser.read(ser.in_waiting)  # Discard
+
+                    # MCU still appears to be powered
+                    return True
+                except (OSError, AttributeError):
+                    # Port error = MCU powered off or disconnected
+                    return False
+
+        except Exception as e:
+            # Any error likely means connection lost
             if progress_callback:
-                progress_callback(f"Checking port accessibility: {port}")
-
-            # Try to open and close the port quickly
-            with serial.Serial(port, 115200, timeout=0.1):
-                if progress_callback:
-                    progress_callback(f"Port {port} is accessible")
-                return True
-
-        except (serial.SerialException, OSError) as e:
-            if progress_callback:
-                progress_callback(f"Error: Cannot access port {port}: {str(e)}")
+                progress_callback(f"DEBUG: Serial check error: {str(e)[:100]}")
             return False
+
+    def _upload_automatic_mode(
+        self,
+        firmware_path,
+        port: str,
+        baud_rate: int,
+        flash_address: str,
+        chip: str,
+        firmware_files: Optional[list],
+        before_reset: bool,
+        after_reset: bool,
+        no_sync: bool,
+        connect_attempts: int,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        full_erase: bool = False,
+    ) -> bool:
+        """Automatic mode: Monitor serial port for MCU power cycles.
+
+        This mode opens serial port once and monitors incoming data to detect
+        when MCU powers on. Perfect for production workflow:
+        1. Click Upload button (port opens and stays open)
+        2. Power on ESP32 (bootloader sends data)
+        3. Upload starts automatically
+        4. Replace board and repeat
+        """
+        import time
+        import serial
+
+        if progress_callback:
+            progress_callback("=" * 60)
+            progress_callback("AUTOMATIC MODE ENABLED")
+            progress_callback("=" * 60)
+            progress_callback("Opening serial port for monitoring...")
+            progress_callback("")
+            progress_callback("Production Workflow:")
+            progress_callback("  1. USB stays connected")
+            progress_callback("  2. Power on ESP32")
+            progress_callback("  3. Upload starts automatically!")
+            progress_callback("  4. Power off, replace board and repeat")
+            progress_callback("")
+            progress_callback("Press 'Stop' button to exit automatic mode")
+            progress_callback("=" * 60)
+
+        # Open serial port once and keep it open
+        try:
+            ser = serial.Serial(port, 115200, timeout=0.1)
+            if progress_callback:
+                progress_callback(f"Serial port {port} opened for monitoring")
+                progress_callback("Waiting for ESP32 to power on...")
+                progress_callback("")
         except Exception as e:
             if progress_callback:
-                progress_callback(f"Error checking port accessibility: {str(e)}")
+                progress_callback(f"Failed to open port {port}: {str(e)}")
             return False
+
+        last_connected = False
+        upload_count = 0
+        check_count = 0
+
+        try:
+            while not self.stop_flag:
+                try:
+                    check_count += 1
+
+                    # Monitor serial data to detect MCU power cycles
+                    wait_for_power_on = not last_connected
+                    debug_callback = progress_callback if check_count % 5 == 0 else None
+                    is_connected = self._check_esp32_data(
+                        ser, wait_for_power_on, debug_callback
+                    )
+
+                    # Show periodic status update every 5 seconds
+                    if check_count % 5 == 0 and progress_callback:
+                        if wait_for_power_on:
+                            progress_callback(
+                                f"Waiting for new MCU... ({check_count} checks)"
+                            )
+                        else:
+                            progress_callback(
+                                f"Monitoring for power-off... ({check_count} checks)"
+                            )
+
+                    # Detect rising edge: ESP32 just powered on
+                    if is_connected and not last_connected:
+                        # Close monitoring port before upload
+                        ser.close()
+
+                        upload_count += 1
+                        if progress_callback:
+                            progress_callback("")
+                            progress_callback("=" * 60)
+                            progress_callback(f"ESP32 #{upload_count} DETECTED!")
+                            progress_callback("=" * 60)
+                            progress_callback(f"Port: {port} - ESP32 is responding")
+
+                        # If Full Erase is enabled, perform it first
+                        if full_erase:
+                            if progress_callback:
+                                progress_callback("")
+                                progress_callback("Starting full flash erase...")
+
+                            erase_success = self.erase_flash(
+                                port=port,
+                                chip=chip,
+                                baud_rate=baud_rate,
+                                before_reset=True,
+                                after_reset=True,
+                                no_sync=False,
+                                connect_attempts=connect_attempts,
+                                progress_callback=progress_callback,
+                            )
+
+                            if not erase_success:
+                                if progress_callback:
+                                    progress_callback("")
+                                    progress_callback("=" * 60)
+                                    progress_callback(f"ESP32 #{upload_count} ERASE FAILED!")
+                                    progress_callback("=" * 60)
+                                    progress_callback("Check board connection and try again...")
+                                    progress_callback("")
+                                    # Send special signal to increment fail counter
+                                    progress_callback("COUNTER:INCREMENT_FAIL")
+                                # Reopen port and continue
+                                try:
+                                    ser = serial.Serial(port, 115200, timeout=0.1)
+                                except Exception as e:
+                                    if progress_callback:
+                                        progress_callback(f"Failed to reopen port: {str(e)}")
+                                    break
+                                last_connected = True
+                                time.sleep(1)
+                                continue
+
+                            if progress_callback:
+                                progress_callback("Flash erase completed successfully")
+                                progress_callback("")
+
+                        # Upload firmware
+                        result = self.upload_firmware(
+                            firmware_path=firmware_path,
+                            port=port,
+                            baud_rate=baud_rate,
+                            flash_address=flash_address,
+                            chip=chip,
+                            progress_callback=progress_callback,
+                            firmware_files=firmware_files,
+                            before_reset=True,
+                            after_reset=True,
+                            no_sync=False,
+                            connect_attempts=connect_attempts,
+                            auto_mode=False,
+                        )
+
+                        # upload_firmware returns (success, corrected_files, was_fixed)
+                        success = result[0] if isinstance(result, tuple) else result
+
+                        if success:
+                            if progress_callback:
+                                progress_callback("")
+                                progress_callback("=" * 60)
+                                progress_callback(f"ESP32 #{upload_count} UPLOAD SUCCESS!")
+                                progress_callback("=" * 60)
+                                progress_callback("Ready for next board. Waiting for MCU power off...")
+                                progress_callback("")
+                                # Send special signal to increment pass counter
+                                progress_callback("COUNTER:INCREMENT_PASS")
+                        else:
+                            if progress_callback:
+                                progress_callback("")
+                                progress_callback("=" * 60)
+                                progress_callback(f"ESP32 #{upload_count} UPLOAD FAILED!")
+                                progress_callback("=" * 60)
+                                progress_callback("Check board connection and try again...")
+                                progress_callback("")
+                                # Send special signal to increment fail counter
+                                progress_callback("COUNTER:INCREMENT_FAIL")
+
+                        # IMPORTANT: Keep last_connected = True so we wait for disconnect
+                        last_connected = True
+
+                        # Reopen serial port for monitoring next cycle
+                        try:
+                            ser = serial.Serial(port, 115200, timeout=0.1)
+                            if progress_callback:
+                                progress_callback(f"Port {port} reopened for monitoring")
+
+                            # CRITICAL: Clear all existing data from application running after upload
+                            # Wait for data to settle, then flush buffer completely
+                            time.sleep(0.5)  # Let ESP32 boot and send initial data
+                            if ser.in_waiting > 0:
+                                discarded = ser.read(ser.in_waiting)
+                                if progress_callback:
+                                    progress_callback(f"DEBUG: Cleared {len(discarded)} bytes from buffer")
+
+                        except Exception as e:
+                            if progress_callback:
+                                progress_callback(f"Failed to reopen port: {str(e)}")
+                            break
+
+                    # Detect falling edge: ESP32 disconnected (no more data)
+                    elif not is_connected and last_connected:
+                        if progress_callback:
+                            progress_callback("")
+                            progress_callback(f"ESP32 #{upload_count} powered off")
+                            progress_callback("Waiting for next board to be powered on...")
+                            progress_callback("")
+                        # Update state: now waiting for new MCU
+                        last_connected = False
+
+                    # Poll interval: 1 second
+                    time.sleep(1)
+
+                except KeyboardInterrupt:
+                    if progress_callback:
+                        progress_callback("")
+                        progress_callback("Automatic mode stopped by user")
+                    break
+                except Exception as e:
+                    if progress_callback:
+                        progress_callback(f"Error in automatic mode: {str(e)}")
+                    time.sleep(1)
+
+        finally:
+            # Always close port when exiting automatic mode
+            try:
+                if ser and ser.is_open:
+                    ser.close()
+                    if progress_callback:
+                        progress_callback(f"Serial port {port} closed")
+            except:
+                pass
+
+        if progress_callback and self.stop_flag:
+            progress_callback("")
+            progress_callback("Automatic mode stopped")
+
+        # Reset stop flag for next use
+        self.stop_flag = False
+        return True  # Return True as automatic mode completed successfully
 
     def _check_port_connection(
         self, port: str, progress_callback: Optional[Callable[[str], None]] = None
@@ -258,11 +557,12 @@ class ESP32Uploader:
         chip: str = "auto",
         progress_callback: Optional[Callable[[str], None]] = None,
         firmware_files: Optional[list] = None,
-        upload_method: str = "auto",
         before_reset: bool = True,
         after_reset: bool = True,
         no_sync: bool = False,
         connect_attempts: int = 1,
+        auto_mode: bool = False,
+        full_erase: bool = False,
     ) -> bool:
         """Upload ESP32 firmware.
 
@@ -274,8 +574,25 @@ class ESP32Uploader:
             chip: ESP32 chip type
             progress_callback: Progress callback function
             firmware_files: List of (address, filepath) tuples for multiple files
-            upload_method: 'auto' for automatic reset or 'manual' for DTR/RTS control
+            auto_mode: If True, continuously poll for ESP32 connection and auto-upload
         """
+        # If auto mode is enabled, use automatic detection and upload
+        if auto_mode:
+            return self._upload_automatic_mode(
+                firmware_path,
+                port,
+                baud_rate,
+                flash_address,
+                chip,
+                firmware_files,
+                before_reset,
+                after_reset,
+                no_sync,
+                connect_attempts,
+                progress_callback,
+                full_erase,
+            )
+
         # Handle both single file (legacy) and multiple files
         if firmware_files:
             files_to_upload = firmware_files
@@ -312,44 +629,32 @@ class ESP32Uploader:
                 progress_callback("Error: esptool not found. Install with: pip install esptool")
             return False, files_to_upload, False
 
-        # Use different upload method based on selection
-        if upload_method == "manual":
-            # For manual mode, only check basic port accessibility
-            if progress_callback:
-                progress_callback("Using manual DTR/RTS control")
-            if not self._check_port_accessibility(port, progress_callback):
-                return False, files_to_upload, False
-            success = self._upload_with_manual_control(
-                files_to_upload, port, baud_rate, chip, progress_callback
-            )
-            return success, files_to_upload, False  # Manual mode doesn't auto-fix
-        else:
-            # Check port connection before auto upload and get chip info
-            connected, chip_info = self._check_port_connection(port, progress_callback)
-            if not connected:
-                return False, files_to_upload, False
+        # Check port connection before auto upload and get chip info
+        connected, chip_info = self._check_port_connection(port, progress_callback)
+        if not connected:
+            return False, files_to_upload, False
 
-            # Check for bootloader address mismatch and auto-fix
-            address_was_fixed = False
-            if chip_info and "chip" in chip_info:
-                files_to_upload, address_was_fixed = self._check_bootloader_address(
-                    files_to_upload, chip_info, progress_callback
-                )
-
-            success = self._upload_with_auto_control(
-                files_to_upload,
-                port,
-                baud_rate,
-                chip,
-                progress_callback,
-                before_reset,
-                after_reset,
-                no_sync,
-                connect_attempts,
+        # Check for bootloader address mismatch and auto-fix
+        address_was_fixed = False
+        if chip_info and "chip" in chip_info:
+            files_to_upload, address_was_fixed = self._check_bootloader_address(
+                files_to_upload, chip_info, progress_callback
             )
 
-            # Return success status, corrected files, and whether address was fixed
-            return success, files_to_upload, address_was_fixed
+        success = self._upload_with_auto_control(
+            files_to_upload,
+            port,
+            baud_rate,
+            chip,
+            progress_callback,
+            before_reset,
+            after_reset,
+            no_sync,
+            connect_attempts,
+        )
+
+        # Return success status, corrected files, and whether address was fixed
+        return success, files_to_upload, address_was_fixed
 
     def _upload_with_auto_control(
         self,
@@ -415,143 +720,6 @@ class ESP32Uploader:
         return self._execute_esptool_command(
             cmd, files_to_upload, port, baud_rate, progress_callback
         )
-
-    def _upload_with_manual_control(
-        self,
-        files_to_upload: list,
-        port: str,
-        baud_rate: int,
-        chip: str,
-        progress_callback: Optional[Callable[[str], None]] = None,
-    ) -> bool:
-        """Upload firmware with manual DTR/RTS control."""
-        from .serial_boot_controller import SerialBootController
-
-        try:
-            if progress_callback:
-                progress_callback("Using manual DTR/RTS control for ESP32 upload")
-
-            # For TTL-RS232 modules, use lower baud rate for better compatibility
-            upload_baud_rate = 115200 if baud_rate > 115200 else baud_rate
-            if upload_baud_rate != baud_rate and progress_callback:
-                progress_callback(f"Using {upload_baud_rate} baud for TTL-RS232 compatibility")
-
-            # Step 1: Enter boot mode using DTR/RTS control
-            controller = SerialBootController(port, upload_baud_rate)
-            if not controller.open_connection():
-                if progress_callback:
-                    progress_callback("Error: Could not open serial connection for DTR/RTS control")
-                    progress_callback(
-                        "Check: 1) Port is not in use 2) TTL-RS232 module connected 3) Correct port selected"
-                    )
-                return False
-
-            if progress_callback:
-                progress_callback("Entering ESP32 boot mode via DTR/RTS control...")
-
-            if not controller.enter_boot_mode(progress_callback):
-                controller.close_connection()
-                if progress_callback:
-                    progress_callback(
-                        "Failed to enter boot mode. Check DTR→GPIO0 and RTS→EN wiring"
-                    )
-                return False
-
-            # Verify if ESP32 actually entered boot mode
-            boot_mode_verified = controller.verify_boot_mode(progress_callback)
-            controller.close_connection()
-
-            if not boot_mode_verified:
-                if progress_callback:
-                    progress_callback("Boot mode verification failed!")
-                    progress_callback("Possible issues:")
-                    progress_callback("1. DTR not connected to GPIO0")
-                    progress_callback("2. RTS not connected to EN/RST")
-                    progress_callback("3. TX/RX wires swapped")
-                    progress_callback("4. ESP32 hardware problem")
-                    progress_callback("5. Try physical BOOT+RESET buttons")
-                # Continue anyway - esptool might still work
-                if progress_callback:
-                    progress_callback("Continuing upload attempt...")
-
-            # Longer delay to ensure ESP32 is stable in boot mode for TTL-RS232
-            import time
-
-            time.sleep(0.5)  # Increased stabilization time
-
-            # Step 2: Use esptool with manual reset options
-            cmd = [
-                sys.executable,
-                "-m",
-                "esptool",
-                "--chip",
-                chip,
-                "--port",
-                port,
-                "--baud",
-                str(upload_baud_rate),  # Use the compatible baud rate
-                "--before",
-                "no-reset",  # Don't reset before
-                "--after",
-                "no-reset",  # Don't reset after
-                "write_flash",
-                "-z",  # Compress data (faster upload)
-                "--flash_mode",
-                "dio",  # Standard flash mode for most ESP32
-                "--flash_freq",
-                "40m",  # 40MHz flash frequency (safe default)
-                "--flash_size",
-                "detect",  # Auto-detect flash size
-            ]
-
-            # Add all address-file pairs
-            for address, filepath in files_to_upload:
-                cmd.extend([address, filepath])
-
-            result = self._execute_esptool_command(
-                cmd, files_to_upload, port, upload_baud_rate, progress_callback
-            )
-
-            # If upload failed, try once more with boot mode re-entry
-            if not result and progress_callback:
-                progress_callback("Upload failed, retrying with boot mode re-entry...")
-
-                # Re-enter boot mode
-                controller = SerialBootController(port, upload_baud_rate)
-                if controller.open_connection():
-                    if controller.enter_boot_mode(progress_callback):
-                        # Verify boot mode on retry as well
-                        retry_verified = controller.verify_boot_mode(progress_callback)
-                        controller.close_connection()
-
-                        if not retry_verified:
-                            if progress_callback:
-                                progress_callback("Retry: Boot mode verification failed again")
-                                progress_callback("Hardware connection issue likely - check wiring")
-
-                        time.sleep(0.5)  # Consistent stabilization time
-
-                        if progress_callback:
-                            progress_callback("Retrying upload after boot mode re-entry...")
-                        result = self._execute_esptool_command(
-                            cmd, files_to_upload, port, upload_baud_rate, progress_callback
-                        )
-                    else:
-                        controller.close_connection()
-
-            # Step 3: Normal boot after upload (if successful)
-            if result:
-                controller = SerialBootController(port, upload_baud_rate)
-                if controller.open_connection():
-                    controller.normal_boot(progress_callback)
-                    controller.close_connection()
-
-            return result
-
-        except Exception as e:
-            if progress_callback:
-                progress_callback(f"Manual control upload error: {str(e)}")
-            return False
 
     def _execute_esptool_command(
         self,

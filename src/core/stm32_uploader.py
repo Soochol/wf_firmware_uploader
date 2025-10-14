@@ -264,12 +264,12 @@ class STM32Uploader:
         try:
             if progress_callback:
                 progress_callback("=" * 70)
-                progress_callback("🔄 AUTOMATIC MODE STARTED")
+                progress_callback("AUTOMATIC MODE ENABLED")
                 progress_callback("=" * 70)
                 progress_callback("Polling for MCU connections every 1 second...")
                 progress_callback("Connect SWD cable and power on MCU to auto-upload")
                 progress_callback("")
-                progress_callback("⚠ To stop: Close application or press Ctrl+C in terminal")
+                progress_callback("To stop: Close application or press Ctrl+C in terminal")
                 progress_callback("=" * 70)
                 progress_callback(f"Configuration:")
                 progress_callback(f"  Firmware: {Path(firmware_path).name}")
@@ -312,7 +312,7 @@ class STM32Uploader:
                         upload_count += 1
                         if progress_callback:
                             progress_callback("")
-                            progress_callback(f"✓ MCU #{upload_count} detected! Starting upload...")
+                            progress_callback(f"MCU #{upload_count} DETECTED!")
 
                         # Perform upload
                         success = self.upload_firmware(
@@ -329,12 +329,22 @@ class STM32Uploader:
 
                         if success:
                             if progress_callback:
-                                progress_callback(f"✓ MCU #{upload_count} programmed successfully!")
-                                progress_callback("Waiting for MCU to disconnect...")
+                                progress_callback(f"MCU #{upload_count} UPLOAD SUCCESS!")
+                                progress_callback("Ready for next board. Waiting for MCU power off...")
+                                progress_callback("")
+                                # Send special signal to increment pass counter
+                                progress_callback("COUNTER:INCREMENT_PASS")
                         else:
                             if progress_callback:
-                                progress_callback(f"❌ MCU #{upload_count} upload failed!")
+                                progress_callback(f"MCU #{upload_count} UPLOAD FAILED!")
+                                progress_callback("Waiting for next MCU...")
+                                progress_callback("")
+                                # Send special signal to increment fail counter
+                                progress_callback("COUNTER:INCREMENT_FAIL")
 
+                        # IMPORTANT: Keep last_connected = True so we wait for disconnect
+                        # This prevents immediate re-upload while MCU is still connected
+                        # User must power off MCU before next upload
                         last_connected = True
 
                     elif not is_connected and last_connected:
@@ -395,7 +405,7 @@ class STM32Uploader:
 
                 if "SUCCESS" in result.stdout or "not found" in result.stderr.lower():
                     if progress_callback and "SUCCESS" in result.stdout:
-                        progress_callback("✓ Terminated lingering programmer processes")
+                        progress_callback("Terminated lingering programmer processes")
                     return True
             else:
                 # Linux/Mac: Use pkill
@@ -403,7 +413,7 @@ class STM32Uploader:
                 subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
 
                 if progress_callback:
-                    progress_callback("✓ Terminated lingering programmer processes")
+                    progress_callback("Terminated lingering programmer processes")
                 return True
 
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -462,7 +472,7 @@ class STM32Uploader:
                 pass  # Timeout is expected and desired
 
             if progress_callback:
-                progress_callback("✓ ST-Link connection released")
+                progress_callback("ST-Link connection released")
 
             # Final wait to ensure ST-Link firmware has released the connection
             time.sleep(0.3)
