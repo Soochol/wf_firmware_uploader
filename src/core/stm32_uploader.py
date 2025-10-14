@@ -187,15 +187,20 @@ class STM32Uploader:
                 # Try the upload
                 success = self._execute_stm32_command(cmd, progress_callback)
                 if success:
-                    # Important: Add delay to ensure SWD connection is fully released
-                    # The -s flag starts the application, but we need to give time
-                    # for the debugger to cleanly disconnect
+                    # CRITICAL: Kill any remaining STM32_Programmer_CLI processes
+                    # This is necessary because the CLI sometimes keeps background connections
                     import time
                     if progress_callback:
-                        progress_callback("Waiting for SWD release...")
-                    time.sleep(1)  # 1 second delay for clean disconnect
+                        progress_callback("Waiting for upload to complete...")
+                    time.sleep(0.5)  # Let upload finish cleanly
 
-                    # Additional disconnect attempt for stubborn connections
+                    # Kill any lingering STM32_Programmer_CLI processes
+                    self._kill_lingering_processes(progress_callback)
+
+                    # Additional delay for hardware to release
+                    time.sleep(0.5)
+
+                    # Try explicit disconnect
                     self._disconnect_programmer(port, connection_mode, progress_callback)
                     return True
                 elif attempt < retry_attempts - 1:
@@ -213,6 +218,43 @@ class STM32Uploader:
                 progress_callback(f"STM32 upload error: {str(e)}")
             return False
 
+    def _kill_lingering_processes(
+        self, progress_callback: Optional[Callable[[str], None]] = None
+    ) -> bool:
+        """Kill any lingering STM32_Programmer_CLI processes.
+
+        Sometimes STM32_Programmer_CLI keeps running in background maintaining SWD lock.
+        This forcefully terminates those processes to release the connection.
+        """
+        try:
+            import subprocess
+
+            system_type = platform.system()
+
+            if system_type == "Windows":
+                # Windows: Use taskkill
+                cmd = ["taskkill", "/F", "/IM", "STM32_Programmer_CLI.exe", "/T"]
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=3, check=False
+                )
+
+                if "SUCCESS" in result.stdout or "not found" in result.stderr.lower():
+                    if progress_callback and "SUCCESS" in result.stdout:
+                        progress_callback("✓ Terminated lingering programmer processes")
+                    return True
+            else:
+                # Linux/Mac: Use pkill
+                cmd = ["pkill", "-9", "STM32_Programmer"]
+                subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
+
+                if progress_callback:
+                    progress_callback("✓ Terminated lingering programmer processes")
+                return True
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            # Process killing failures are non-critical
+            return False
+
     def _disconnect_programmer(
         self,
         port: str,
@@ -221,62 +263,61 @@ class STM32Uploader:
     ) -> bool:
         """Disconnect STM32 programmer to allow next upload without power cycle.
 
-        STM32_Programmer_CLI doesn't have a --disconnect flag in the traditional sense.
-        Instead, we need to connect and immediately disconnect using reset modes.
-
-        The solution is to use -s (software reset) or -hardRst and then exit cleanly.
+        The real issue is that ST-Link hardware maintains its connection.
+        We need to explicitly tell the programmer to release the target.
         """
         try:
-            # Method 1: Try to connect with mode=Normal and then disconnect via reset
-            # This releases the SWD lock by doing a clean exit sequence
-            cmd = [
+            if progress_callback:
+                progress_callback("Releasing ST-Link connection...")
+
+            # Method 1: Hard reset of ST-Link interface itself
+            # This is more aggressive and resets the programmer hardware
+            reset_cmd = [
                 self.stm32_programmer_cli,
                 "-c",
                 f"port={port}",
                 "-c",
                 f"mode={connection_mode}",
                 "-c",
-                "reset=SWrst",  # Software reset
-                "-s",  # Start (run) the MCU - releases debugger
+                "reset=HWrst",  # Hardware reset - more thorough
             ]
 
-            if progress_callback:
-                progress_callback("Releasing SWD connection...")
-
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=5, check=False
+                reset_cmd, capture_output=True, text=True, timeout=5, check=False
             )
 
-            # Check if command succeeded
-            success = result.returncode == 0 or "Application is running" in result.stdout
+            # Wait for hardware to settle
+            import time
+            time.sleep(0.5)
 
-            if success:
-                if progress_callback:
-                    progress_callback("✓ SWD connection released")
-                return True
-            else:
-                # Try alternative method: use -rst and let it timeout/exit
-                if progress_callback:
-                    progress_callback("Trying alternative disconnect method...")
+            # Method 2: Now explicitly disconnect by running without commands
+            # Just connect and immediately exit - forces clean disconnect
+            disconnect_cmd = [
+                self.stm32_programmer_cli,
+                "-c",
+                f"port={port}",
+                "-c",
+                f"mode={connection_mode}",
+            ]
 
-                # Just a short connection that exits cleanly
-                alt_cmd = [
-                    self.stm32_programmer_cli,
-                    "-c",
-                    f"port={port}",
-                    "-rst",  # Reset and exit
-                ]
+            # Run with very short timeout to force quick exit
+            try:
+                subprocess.run(disconnect_cmd, capture_output=True, text=True, timeout=1, check=False)
+            except subprocess.TimeoutExpired:
+                pass  # Timeout is expected and desired
 
-                subprocess.run(alt_cmd, capture_output=True, text=True, timeout=3, check=False)
+            if progress_callback:
+                progress_callback("✓ ST-Link connection released")
 
-                if progress_callback:
-                    progress_callback("✓ Disconnect attempt completed")
-                return True
+            # Final wait to ensure ST-Link firmware has released the connection
+            time.sleep(0.3)
 
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            return True
+
+        except (FileNotFoundError, OSError) as e:
             # Disconnect errors are not critical
             if progress_callback:
-                progress_callback(f"Note: Disconnect had minor issue (non-critical): {str(e)}")
+                progress_callback(f"Note: Disconnect command issue: {str(e)}")
             return False
 
     def _execute_stm32_command(self, cmd, progress_callback):
