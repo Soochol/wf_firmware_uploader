@@ -642,6 +642,7 @@ class ESP32Tab(QWidget):
         self.device_type = "ESP32"
         self.firmware_files: list[tuple[str, str]] = []  # List of (address, filepath) tuples
         self.settings_manager = settings_manager
+        self.esp32_uploader = ESP32Uploader()  # Create uploader instance for chip detection
         self.init_ui()
 
     def init_ui(self):
@@ -699,6 +700,14 @@ class ESP32Tab(QWidget):
         full_build_btn = QPushButton("Full Build...")
         full_build_btn.clicked.connect(self.setup_full_build)
         quick_layout.addWidget(full_build_btn)
+
+        detect_chip_btn = QPushButton("Detect Chip & Fix Addresses")
+        detect_chip_btn.clicked.connect(self.detect_and_fix_addresses)
+        detect_chip_btn.setToolTip(
+            "Auto-detect connected ESP32 chip type and fix bootloader address\n"
+            "(ESP32-S3/C3/C6/H2 use 0x0, ESP32 Classic uses 0x1000)"
+        )
+        quick_layout.addWidget(detect_chip_btn)
 
         quick_layout.addStretch()
         file_layout.addLayout(quick_layout)
@@ -1465,6 +1474,112 @@ class ESP32Tab(QWidget):
                 self.append_log(f"Log saved to: {file_path}")
             except Exception as e:
                 self.append_log(f"Failed to save log: {str(e)}")
+
+    def detect_and_fix_addresses(self):
+        """Auto-detect chip type from connected device and fix addresses."""
+        if not self.firmware_files:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setWindowTitle("No Files")
+            msg.setText("Please add firmware files first before detecting chip type.")
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            return
+
+        current_port = self.get_selected_port()
+        if not current_port:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("No Port Selected")
+            msg.setText("Please select a serial port first to detect chip type.")
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            return
+
+        try:
+            self.append_log("Detecting chip type from connected device...")
+            chip_info = self.esp32_uploader.get_chip_info(current_port)
+
+            if chip_info and "chip" in chip_info:
+                chip_name = chip_info["chip"].upper()
+                self.append_log(f"Detected: {chip_name}")
+
+                # Determine correct bootloader address
+                if any(variant in chip_name for variant in ["S3", "C3", "C6", "H2", "C2"]):
+                    correct_bootloader_addr = "0x0"
+                    chip_family = "ESP32-S3/C3/C6/H2"
+                else:
+                    correct_bootloader_addr = "0x1000"
+                    chip_family = "ESP32 Classic"
+
+                self.append_log(f"Chip family: {chip_family}")
+                self.append_log(f"Correct bootloader address: {correct_bootloader_addr}")
+
+                # Fix bootloader address if found
+                fixed = False
+                for i, (addr, filepath) in enumerate(self.firmware_files):
+                    filename = Path(filepath).name.lower()
+                    if "bootloader" in filename:
+                        old_addr = addr
+                        if old_addr != correct_bootloader_addr:
+                            self.firmware_files[i] = (correct_bootloader_addr, filepath)
+                            self.append_log(
+                                f"Fixed: bootloader.bin {old_addr} → {correct_bootloader_addr}"
+                            )
+                            fixed = True
+                        else:
+                            self.append_log(
+                                f"Bootloader address already correct: {correct_bootloader_addr}"
+                            )
+                        break
+
+                if fixed:
+                    self.update_file_list()
+                    self.save_settings()
+                    if self.settings_manager:
+                        self.settings_manager.save_settings()
+
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Icon.Information)
+                    msg.setWindowTitle("Address Fixed")
+                    msg.setText(
+                        f"Detected {chip_name}\n\n"
+                        f"Bootloader address updated to {correct_bootloader_addr} for {chip_family}"
+                    )
+                    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    msg.exec()
+                else:
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Icon.Information)
+                    msg.setWindowTitle("Detection Complete")
+                    msg.setText(
+                        f"Detected {chip_name}\n\nNo changes needed - addresses are correct!"
+                    )
+                    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    msg.exec()
+            else:
+                self.append_log("Failed to detect chip type")
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Icon.Warning)
+                msg.setWindowTitle("Detection Failed")
+                msg.setText(
+                    "Could not detect chip type.\n\n"
+                    "Please check:\n"
+                    "1. ESP32 is connected to selected port\n"
+                    "2. USB cable is properly connected\n"
+                    "3. Drivers are installed"
+                )
+                msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                msg.exec()
+
+        except Exception as e:
+            self.append_log(f"Error detecting chip: {str(e)}")
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("Error")
+            msg.setText(f"Error detecting chip type:\n\n{str(e)}")
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
 
 
 class MainWindow(QMainWindow):

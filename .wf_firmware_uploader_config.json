@@ -23,7 +23,7 @@
   "esp32": {
     "last_firmware_files": [
       [
-        "0x1000",
+        "0x00",
         "C:\\myCodeRepoWindows\\PSA1.0_firmware\\.pio\\build\\usb\\bootloader.bin"
       ],
       [
