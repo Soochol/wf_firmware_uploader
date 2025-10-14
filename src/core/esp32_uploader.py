@@ -30,7 +30,7 @@ class ESP32Uploader:
                 progress_callback(f"Checking port accessibility: {port}")
 
             # Try to open and close the port quickly
-            with serial.Serial(port, 115200, timeout=0.1) as ser:
+            with serial.Serial(port, 115200, timeout=0.1):
                 if progress_callback:
                     progress_callback(f"Port {port} is accessible")
                 return True
@@ -171,7 +171,7 @@ class ESP32Uploader:
             return False
 
         # Validate all files exist
-        for address, filepath in files_to_upload:
+        for _, filepath in files_to_upload:
             if not os.path.exists(filepath):
                 if progress_callback:
                     progress_callback(f"Error: Firmware file not found: {filepath}")
@@ -251,7 +251,19 @@ class ESP32Uploader:
         if connect_attempts > 1:
             cmd.extend(["--connect-attempts", str(connect_attempts)])
 
-        cmd.append("write-flash")
+        # Add write_flash command with flash configuration
+        cmd.extend(
+            [
+                "write_flash",
+                "-z",  # Compress data (faster upload)
+                "--flash_mode",
+                "dio",  # Standard flash mode for most ESP32
+                "--flash_freq",
+                "40m",  # 40MHz flash frequency (safe default)
+                "--flash_size",
+                "detect",  # Auto-detect flash size
+            ]
+        )
 
         # Add all address-file pairs
         for address, filepath in files_to_upload:
@@ -339,7 +351,14 @@ class ESP32Uploader:
                 "no-reset",  # Don't reset before
                 "--after",
                 "no-reset",  # Don't reset after
-                "write-flash",
+                "write_flash",
+                "-z",  # Compress data (faster upload)
+                "--flash_mode",
+                "dio",  # Standard flash mode for most ESP32
+                "--flash_freq",
+                "40m",  # 40MHz flash frequency (safe default)
+                "--flash_size",
+                "detect",  # Auto-detect flash size
             ]
 
             # Add all address-file pairs
