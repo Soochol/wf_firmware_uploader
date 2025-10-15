@@ -1,0 +1,13 @@
+   Building esptool==5.0.2
+Downloading pyside6-essentials (69.3MiB)
+Downloading pyside6-addons (152.8MiB)
+Downloading pyinstaller (1.3MiB)
+Downloading mypy (9.1MiB)
+ Downloading pyinstaller
+      Built esptool==5.0.2
+ Downloading mypy
+ Downloading pyside6-addons
+ Downloading pyside6-essentials
+Installed 46 packages in 14.20s
+Platform: Windows, Scale Factor: 0.8
+DEBUG [STM32Tab]: Setting main widget stylesheet...

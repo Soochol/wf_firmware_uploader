@@ -15,7 +15,8 @@
     "last_port": "SWD",
     "flash_address": "0x08000000",
     "full_erase": true,
-    "connection_mode": "HOTPLUG",
+    "auto_mode": true,
+    "connection_mode": "UR",
     "hardware_reset": false,
     "connection_speed": 4000,
     "retry_attempts": 3
@@ -23,7 +24,7 @@
   "esp32": {
     "last_firmware_files": [
       [
-        "0x1000",
+        "0x0",
         "C:\\myCodeRepoWindows\\wf_firmware_uploader\\wf_firmware_uploader\\firmwares\\esp32\\bootloader.bin"
       ],
       [
@@ -37,11 +38,23 @@
     ],
     "last_port": "COM4",
     "full_erase": true,
-    "upload_method": "auto",
+    "auto_mode": true,
     "baud_rate": 921600,
     "before_reset": true,
     "after_reset": true,
     "no_sync": false,
     "connect_attempts": 1
+  },
+  "counters": {
+    "stm32": {
+      "total": 10,
+      "pass": 10,
+      "fail": 0
+    },
+    "esp32": {
+      "total": 10,
+      "pass": 6,
+      "fail": 4
+    }
   }
 }
