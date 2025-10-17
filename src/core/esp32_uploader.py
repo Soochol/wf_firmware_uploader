@@ -20,7 +20,6 @@ class ESP32Uploader:
 
     def __init__(self):
         """Initialize ESP32Uploader."""
-        self.esptool_cmd = "esptool.py"
         self.stop_flag = False
 
     def _check_bootloader_address(
@@ -439,9 +438,9 @@ class ESP32Uploader:
                 # Send special status message to show RESET button guidance
                 progress_callback("STATUS:PUSH_RESET")
 
-            # Use esptool directly instead of sys.executable
-            # In PyInstaller, sys.executable points to the EXE itself, causing new GUI windows!
-            cmd = ["esptool.py", "--port", port, "chip_id"]
+            # Use sys.executable with -m flag for both dev and PyInstaller
+            # PyInstaller includes esptool module, so this works in both environments
+            cmd = [sys.executable, "-m", "esptool", "--port", port, "chip_id"]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False, creationflags=CREATE_NO_WINDOW)
 
             if result.returncode == 0:
@@ -498,9 +497,10 @@ class ESP32Uploader:
     def is_esptool_available(self) -> bool:
         """Check if esptool is installed."""
         try:
-            # Try to run esptool.py directly (works in both dev and PyInstaller)
+            # Use sys.executable with -m flag for both dev and PyInstaller
+            # PyInstaller includes esptool module, so this works in both environments
             result = subprocess.run(
-                ["esptool.py", "version"],
+                [sys.executable, "-m", "esptool", "version"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -524,8 +524,9 @@ class ESP32Uploader:
             if progress_callback:
                 progress_callback(f"Querying chip info on {port}...")
 
-            # Use esptool directly (not sys.executable which points to EXE in PyInstaller!)
-            cmd = ["esptool.py", "--port", port, "chip_id"]
+            # Use sys.executable with -m flag for both dev and PyInstaller
+            # PyInstaller includes esptool module, so this works in both environments
+            cmd = [sys.executable, "-m", "esptool", "--port", port, "chip_id"]
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False, creationflags=CREATE_NO_WINDOW)
 
@@ -702,9 +703,12 @@ class ESP32Uploader:
         connect_attempts: int = 1,
     ) -> bool:
         """Upload firmware with automatic reset control (original method)."""
-        # Use esptool directly (not sys.executable which is the EXE in PyInstaller!)
+        # Use sys.executable with -m flag for both dev and PyInstaller
+        # PyInstaller includes esptool module, so this works in both environments
         cmd = [
-            "esptool.py",
+            sys.executable,
+            "-m",
+            "esptool",
             "--chip",
             chip,
             "--port",
@@ -886,9 +890,12 @@ class ESP32Uploader:
                 # Use lower baud rate on retry attempts
                 current_baud = baud_rate if attempt == 0 else min(115200, baud_rate)
 
-                # Use esptool directly (sys.executable = EXE in PyInstaller!)
+                # Use sys.executable with -m flag for both dev and PyInstaller
+                # PyInstaller includes esptool module, so this works in both environments
                 cmd = [
-                    "esptool.py",
+                    sys.executable,
+                    "-m",
+                    "esptool",
                     "--chip",
                     chip,
                     "--port",
@@ -1001,8 +1008,9 @@ class ESP32Uploader:
             return None
 
         try:
-            # Use esptool directly (sys.executable = EXE in PyInstaller!)
-            cmd = ["esptool.py", "--chip", chip, "--port", port, "flash_id"]
+            # Use sys.executable with -m flag for both dev and PyInstaller
+            # PyInstaller includes esptool module, so this works in both environments
+            cmd = [sys.executable, "-m", "esptool", "--chip", chip, "--port", port, "flash_id"]
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False, creationflags=CREATE_NO_WINDOW)
 

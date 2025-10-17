@@ -97,12 +97,26 @@ if __name__ == "__main__":
     # This prevents PyInstaller from re-executing the main script when spawning subprocesses
     multiprocessing.freeze_support()
 
-    # Check if this is a child process spawned by multiprocessing
-    # If so, DO NOT start the GUI - just exit immediately
+    # Check if this is a child process spawned by multiprocessing or subprocess -m
+    # If so, DO NOT start the GUI - just exit immediately or run the requested module
     # This prevents the bug where subprocess calls open new GUI windows
-    if len(sys.argv) > 1 and sys.argv[1].startswith('--multiprocessing'):
-        # This is a multiprocessing child process, not the main GUI
-        sys.exit(0)
+    if len(sys.argv) > 1:
+        first_arg = sys.argv[1]
+        # Check for multiprocessing child process
+        if first_arg.startswith('--multiprocessing'):
+            sys.exit(0)
+        # Check for -m flag (module execution like "exe -m esptool")
+        elif first_arg == '-m':
+            # This is a subprocess calling a Python module (e.g., esptool)
+            # Run the module instead of the GUI
+            import runpy
+            if len(sys.argv) > 2:
+                module_name = sys.argv[2]
+                # Remove the first two args (-m and module name) and run the module
+                sys.argv = [sys.argv[0]] + sys.argv[3:]
+                sys.exit(runpy.run_module(module_name, run_name="__main__"))
+            else:
+                sys.exit(1)  # Invalid -m usage
 
     # Only start GUI if this is the actual main process (not a subprocess)
     sys.exit(main())
