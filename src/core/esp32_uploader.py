@@ -113,11 +113,13 @@ class ESP32Uploader:
                             progress_callback(
                                 f"DEBUG: Detected bootloader data ({len(data)} bytes) - New MCU!"
                             )
+                            progress_callback(f"[BOOTLOADER DATA] {data_str}")
                         return True
                     else:
                         # Application data - ignore and clear
                         if progress_callback:
                             progress_callback(f"DEBUG: Ignoring app data ({len(data)} bytes)")
+                            progress_callback(f"[APP DATA] {data_str}")
                         return False
 
                 # No data = MCU not powered yet
@@ -243,6 +245,8 @@ class ESP32Uploader:
 
                         upload_count += 1
                         if progress_callback:
+                            # Reset background color to default (new MCU connected)
+                            progress_callback("BACKGROUND:RESET")
                             progress_callback("")
                             progress_callback("=" * 60)
                             progress_callback(f"ESP32 #{upload_count} DETECTED!")
@@ -264,6 +268,7 @@ class ESP32Uploader:
                                 no_sync=False,
                                 connect_attempts=connect_attempts,
                                 progress_callback=progress_callback,
+                                skip_connection_check=True,  # Skip check in auto mode
                             )
 
                             if not erase_success:
@@ -305,6 +310,7 @@ class ESP32Uploader:
                             no_sync=False,
                             connect_attempts=connect_attempts,
                             auto_mode=False,
+                            skip_connection_check=True,  # Skip check in auto mode
                         )
 
                         # upload_firmware returns (success, corrected_files, was_fixed)
@@ -318,8 +324,9 @@ class ESP32Uploader:
                                 progress_callback("=" * 60)
                                 progress_callback("Ready for next board. Waiting for MCU power off...")
                                 progress_callback("")
-                                # Send special signal to increment pass counter
+                                # Send special signals
                                 progress_callback("COUNTER:INCREMENT_PASS")
+                                progress_callback("BACKGROUND:SUCCESS")
                         else:
                             if progress_callback:
                                 progress_callback("")
@@ -328,8 +335,9 @@ class ESP32Uploader:
                                 progress_callback("=" * 60)
                                 progress_callback("Check board connection and try again...")
                                 progress_callback("")
-                                # Send special signal to increment fail counter
+                                # Send special signals
                                 progress_callback("COUNTER:INCREMENT_FAIL")
+                                progress_callback("BACKGROUND:FAILURE")
 
                         # IMPORTANT: Keep last_connected = True so we wait for disconnect
                         last_connected = True
@@ -386,13 +394,22 @@ class ESP32Uploader:
             except:
                 pass
 
-        if progress_callback and self.stop_flag:
-            progress_callback("")
-            progress_callback("Automatic mode stopped")
-
-        # Reset stop flag for next use
-        self.stop_flag = False
-        return True  # Return True as automatic mode completed successfully
+        # Determine return status based on how automatic mode ended
+        if self.stop_flag:
+            # User clicked Stop button
+            if progress_callback:
+                progress_callback("")
+                progress_callback("Automatic mode stopped by user")
+            self.stop_flag = False
+            return 2  # Status code 2: Stopped by user
+        elif upload_count > 0:
+            # At least one upload succeeded
+            self.stop_flag = False
+            return True  # Status code 1: Success
+        else:
+            # No uploads completed (port open error or immediate exit)
+            self.stop_flag = False
+            return False  # Status code 0: Failure
 
     def _check_port_connection(
         self, port: str, progress_callback: Optional[Callable[[str], None]] = None
@@ -563,6 +580,7 @@ class ESP32Uploader:
         connect_attempts: int = 1,
         auto_mode: bool = False,
         full_erase: bool = False,
+        skip_connection_check: bool = False,
     ) -> bool:
         """Upload ESP32 firmware.
 
@@ -575,6 +593,7 @@ class ESP32Uploader:
             progress_callback: Progress callback function
             firmware_files: List of (address, filepath) tuples for multiple files
             auto_mode: If True, continuously poll for ESP32 connection and auto-upload
+            skip_connection_check: If True, skip initial connection check (auto mode)
         """
         # If auto mode is enabled, use automatic detection and upload
         if auto_mode:
@@ -629,17 +648,18 @@ class ESP32Uploader:
                 progress_callback("Error: esptool not found. Install with: pip install esptool")
             return False, files_to_upload, False
 
-        # Check port connection before auto upload and get chip info
-        connected, chip_info = self._check_port_connection(port, progress_callback)
-        if not connected:
-            return False, files_to_upload, False
-
-        # Check for bootloader address mismatch and auto-fix
+        # Check port connection before upload and get chip info (skip in automatic mode)
         address_was_fixed = False
-        if chip_info and "chip" in chip_info:
-            files_to_upload, address_was_fixed = self._check_bootloader_address(
-                files_to_upload, chip_info, progress_callback
-            )
+        if not skip_connection_check:
+            connected, chip_info = self._check_port_connection(port, progress_callback)
+            if not connected:
+                return False, files_to_upload, False
+
+            # Check for bootloader address mismatch and auto-fix
+            if chip_info and "chip" in chip_info:
+                files_to_upload, address_was_fixed = self._check_bootloader_address(
+                    files_to_upload, chip_info, progress_callback
+                )
 
         success = self._upload_with_auto_control(
             files_to_upload,
@@ -742,21 +762,42 @@ class ESP32Uploader:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True,
+                text=False,  # Binary mode for unbuffered output
+                bufsize=0,   # Unbuffered - get output immediately
             )
 
+            output_buffer = ""
             while True:
                 if process.stdout is None:
                     break
-                output = process.stdout.readline()
-                if output == "" and process.poll() is not None:
+
+                # Read one byte at a time for real-time output
+                chunk = process.stdout.read(1)
+                if chunk == b"" and process.poll() is not None:
                     break
-                if output and progress_callback:
-                    output = output.strip()
-                    if output:
-                        progress_callback(output)
+
+                if chunk and progress_callback:
+                    try:
+                        char = chunk.decode('utf-8', errors='ignore')
+                        output_buffer += char
+
+                        # Send output immediately on newline
+                        if char == '\n':
+                            output_buffer = output_buffer.strip()
+                            if output_buffer:
+                                progress_callback(output_buffer)
+                            output_buffer = ""
+                        elif char == '.':
+                            # Send dots immediately for "Connecting..." messages
+                            # Don't clear buffer - keep accumulating for complete line
+                            if 'Connecting' in output_buffer or 'Writing at' in output_buffer:
+                                progress_callback(output_buffer.strip())
+                    except Exception:
+                        pass
+
+            # Send any remaining buffer
+            if output_buffer.strip() and progress_callback:
+                progress_callback(output_buffer.strip())
 
             return_code = process.wait()
 
@@ -801,20 +842,27 @@ class ESP32Uploader:
         no_sync: bool = False,
         connect_attempts: int = 1,
         progress_callback: Optional[Callable[[str], None]] = None,
+        skip_connection_check: bool = False,
     ) -> bool:
-        """Erase ESP32 flash."""
+        """Erase ESP32 flash.
+
+        Args:
+            skip_connection_check: If True, skip initial connection check (used in automatic mode)
+        """
         if not self.is_esptool_available():
             return False
 
-        # First, try to connect to verify ESP32 is accessible (like upload does)
-        connected, chip_info = self._check_port_connection(port, progress_callback)
-        if not connected:
-            if progress_callback:
-                progress_callback("Failed to connect to ESP32 for erase operation")
-                progress_callback("Trying alternative connection approach...")
-        elif chip_info and "chip" in chip_info and progress_callback:
-            # Log chip info during erase
-            progress_callback(f"Chip type: {chip_info['chip']}")
+        # Skip connection check if ESP32 already detected (automatic mode)
+        if not skip_connection_check:
+            # First, try to connect to verify ESP32 is accessible (like upload does)
+            connected, chip_info = self._check_port_connection(port, progress_callback)
+            if not connected:
+                if progress_callback:
+                    progress_callback("Failed to connect to ESP32 for erase operation")
+                    progress_callback("Trying alternative connection approach...")
+            elif chip_info and "chip" in chip_info and progress_callback:
+                # Log chip info during erase
+                progress_callback(f"Chip type: {chip_info['chip']}")
 
         # Try erase with multiple attempts and progressive fallback
         for attempt in range(max(1, connect_attempts)):

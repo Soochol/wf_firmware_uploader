@@ -185,10 +185,10 @@ class STM32Tab(QWidget):
 
         # Device log section (moved below upload buttons)
         self.log_group = QGroupBox(f"{self.device_type} Log")
-        self.log_group.setProperty("class", "log-group")  # Add CSS class
+        # Note: Qt CSS class selectors may not work as expected, using direct styling instead
         self.log_group.setStyleSheet(
             """
-            QGroupBox.log-group {
+            QGroupBox {
                 font-size: 12pt !important;
                 font-weight: bold !important;
                 border: 2px solid #cccccc;
@@ -196,7 +196,7 @@ class STM32Tab(QWidget):
                 margin-top: 10px;
                 padding-top: 10px;
             }
-            QGroupBox.log-group::title {
+            QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 5px 0 5px;
@@ -208,10 +208,9 @@ class STM32Tab(QWidget):
         # Log controls
         log_controls = QHBoxLayout()
         self.clear_log_btn = QPushButton(f"Clear {self.device_type} Log")
-        self.clear_log_btn.setProperty("class", "log-widget")  # Add CSS class
         self.clear_log_btn.setStyleSheet(
             """
-            QPushButton.log-widget {
+            QPushButton {
                 font-size: 10pt !important;
                 padding: 5px 10px;
                 background-color: #f44336;
@@ -219,7 +218,7 @@ class STM32Tab(QWidget):
                 border: none;
                 border-radius: 4px;
             }
-            QPushButton.log-widget:hover {
+            QPushButton:hover {
                 background-color: #d32f2f;
             }
         """
@@ -230,10 +229,9 @@ class STM32Tab(QWidget):
         log_controls.addStretch()
 
         self.save_log_btn = QPushButton(f"Save {self.device_type} Log")
-        self.save_log_btn.setProperty("class", "log-widget")  # Add CSS class
         self.save_log_btn.setStyleSheet(
             """
-            QPushButton.log-widget {
+            QPushButton {
                 font-size: 10pt !important;
                 padding: 5px 10px;
                 background-color: #2196F3;
@@ -241,7 +239,7 @@ class STM32Tab(QWidget):
                 border: none;
                 border-radius: 4px;
             }
-            QPushButton.log-widget:hover {
+            QPushButton:hover {
                 background-color: #1976D2;
             }
         """
@@ -584,6 +582,10 @@ class STM32Tab(QWidget):
 
     def set_log_background_color(self, color: str):
         """Set log background color."""
+        # Use default color if empty string is provided
+        if not color:
+            color = "#2b2b2b"
+
         self.log_text.setStyleSheet(
             f"""
             QTextEdit {{
@@ -623,3 +625,53 @@ class STM32Tab(QWidget):
             self.settings_manager.reset_counters(self.device_type)
             self.settings_manager.save_settings()
         self.append_log(f"{self.device_type} counters reset")
+
+    def set_upload_button_uploading(self):
+        """Set upload button to 'uploading/stop' state (red)."""
+        self.upload_btn.setText("Stop Automatic Mode")
+        self.upload_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                font-size: 12pt;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+            QPushButton:pressed {
+                background-color: #b71c1c;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """
+        )
+
+    def set_upload_button_ready(self):
+        """Set upload button to 'ready' state (green)."""
+        self.upload_btn.setText(f"Upload {self.device_type}")
+        self.upload_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                font-size: 12pt;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """
+        )

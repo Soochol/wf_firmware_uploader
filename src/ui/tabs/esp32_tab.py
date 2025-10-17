@@ -791,6 +791,10 @@ class ESP32Tab(QWidget):
 
     def set_log_background_color(self, color: str):
         """Set log background color."""
+        # Use default color if empty string is provided
+        if not color:
+            color = "#2b2b2b"
+
         self.log_text.setStyleSheet(
             f"""
             QTextEdit {{
@@ -827,3 +831,53 @@ class ESP32Tab(QWidget):
             self.settings_manager.reset_counters(self.device_type)
             self.settings_manager.save_settings()
         self.append_log(f"{self.device_type} counters reset")
+
+    def set_upload_button_uploading(self):
+        """Set upload button to 'uploading/stop' state (red)."""
+        self.upload_btn.setText("Stop Automatic Mode")
+        self.upload_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                font-size: 12pt;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+            QPushButton:pressed {
+                background-color: #b71c1c;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """
+        )
+
+    def set_upload_button_ready(self):
+        """Set upload button to 'ready' state (green)."""
+        self.upload_btn.setText("Upload ESP32")
+        self.upload_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                border-radius: 8px;
+                font-size: 12pt;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """
+        )

@@ -22,6 +22,7 @@ class STM32Uploader:
     def __init__(self):
         """Initialize STM32Uploader."""
         self.stm32_programmer_cli = self._find_stm32_programmer_cli()
+        self.stop_flag = False
 
     def _find_stm32_programmer_cli(self) -> str:
         """Find STM32_Programmer_CLI path on Windows/Linux."""
@@ -282,7 +283,7 @@ class STM32Uploader:
             last_connected = False
 
             # Continuous polling loop
-            while True:
+            while not self.stop_flag:
                 try:
                     # Check if MCU is connected
                     check_cmd = [
@@ -311,6 +312,8 @@ class STM32Uploader:
                         # MCU just connected! Upload immediately
                         upload_count += 1
                         if progress_callback:
+                            # Reset background color to default (new MCU connected)
+                            progress_callback("BACKGROUND:RESET")
                             progress_callback("")
                             progress_callback(f"MCU #{upload_count} DETECTED!")
 
@@ -332,15 +335,17 @@ class STM32Uploader:
                                 progress_callback(f"MCU #{upload_count} UPLOAD SUCCESS!")
                                 progress_callback("Ready for next board. Waiting for MCU power off...")
                                 progress_callback("")
-                                # Send special signal to increment pass counter
+                                # Send special signals
                                 progress_callback("COUNTER:INCREMENT_PASS")
+                                progress_callback("BACKGROUND:SUCCESS")
                         else:
                             if progress_callback:
                                 progress_callback(f"MCU #{upload_count} UPLOAD FAILED!")
                                 progress_callback("Waiting for next MCU...")
                                 progress_callback("")
-                                # Send special signal to increment fail counter
+                                # Send special signals
                                 progress_callback("COUNTER:INCREMENT_FAIL")
+                                progress_callback("BACKGROUND:FAILURE")
 
                         # IMPORTANT: Keep last_connected = True so we wait for disconnect
                         # This prevents immediate re-upload while MCU is still connected
@@ -375,12 +380,31 @@ class STM32Uploader:
                 except KeyboardInterrupt:
                     if progress_callback:
                         progress_callback("")
-                        progress_callback("Automatic mode stopped by user")
-                    return True
+                        progress_callback("Automatic mode stopped by user (Ctrl+C)")
+                    self.stop_flag = False
+                    return 2  # Stopped by user
+
+            # Determine return status based on how automatic mode ended
+            if self.stop_flag:
+                # User clicked Stop button
+                if progress_callback:
+                    progress_callback("")
+                    progress_callback("Automatic mode stopped by user")
+                self.stop_flag = False
+                return 2  # Status code 2: Stopped by user
+            elif upload_count > 0:
+                # At least one upload succeeded
+                self.stop_flag = False
+                return True  # Status code 1: Success
+            else:
+                # No uploads completed
+                self.stop_flag = False
+                return False  # Status code 0: Failure
 
         except Exception as e:
             if progress_callback:
                 progress_callback(f"Automatic mode error: {str(e)}")
+            self.stop_flag = False
             return False
 
     def _kill_lingering_processes(

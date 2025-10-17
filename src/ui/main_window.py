@@ -99,14 +99,51 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tab_widget)
 
     def start_upload(self, device_type: str):
-        """Start upload process."""
+        """Start upload process (or stop if already running in automatic mode)."""
         kwargs: dict[str, Any] = {}
+
+        # Check if this is ESP32 automatic mode with an already running upload
+        if device_type == "ESP32":
+            esp32_tab = self.esp32_tab
+            auto_mode = esp32_tab.auto_mode_checkbox.isChecked()
+
+            # If automatic mode is enabled and thread is already running, this is a STOP request
+            if auto_mode and device_type in self.upload_threads and self.upload_threads[device_type].isRunning():
+                # Stop the automatic mode
+                self.upload_threads[device_type].request_stop()
+                esp32_tab.append_log("Stopping automatic mode...")
+                esp32_tab.update_status("Stopping...")
+                # Button state will be restored in on_upload_finished()
+                return
+
+        # Check if this is STM32 automatic mode with an already running upload
+        if device_type == "STM32":
+            stm32_tab = self.stm32_tab
+            auto_mode = False
+            if hasattr(stm32_tab, "auto_mode_checkbox"):
+                auto_mode = stm32_tab.auto_mode_checkbox.isChecked()
+
+            # If automatic mode is enabled and thread is already running, this is a STOP request
+            if auto_mode and device_type in self.upload_threads and self.upload_threads[device_type].isRunning():
+                # Stop the automatic mode
+                self.upload_threads[device_type].request_stop()
+                stm32_tab.append_log("Stopping automatic mode...")
+                stm32_tab.update_status("Stopping...")
+                # Button state will be restored in on_upload_finished()
+                return
 
         if device_type == "STM32":
             tab = self.stm32_tab
             uploader: Union[STM32Uploader, ESP32Uploader] = self.stm32_uploader
-            # Clear STM32 log before starting upload
-            self.stm32_tab.clear_log()
+
+            # Check if automatic mode
+            auto_mode = False
+            if hasattr(tab, "auto_mode_checkbox"):
+                auto_mode = tab.auto_mode_checkbox.isChecked()
+
+            # Clear log only if NOT in automatic mode (to preserve background color)
+            if not auto_mode:
+                self.stm32_tab.clear_log()
 
             file_path = tab.get_file_path()
             if not file_path:
@@ -140,8 +177,15 @@ class MainWindow(QMainWindow):
         else:  # ESP32
             esp32_tab = self.esp32_tab
             uploader = self.esp32_uploader
-            # Clear ESP32 log before starting upload
-            self.esp32_tab.clear_log()
+
+            # Check if automatic mode
+            auto_mode = False
+            if hasattr(esp32_tab, "auto_mode_checkbox"):
+                auto_mode = esp32_tab.auto_mode_checkbox.isChecked()
+
+            # Clear log only if NOT in automatic mode (to preserve background color)
+            if not auto_mode:
+                self.esp32_tab.clear_log()
 
             firmware_files = esp32_tab.get_firmware_files()
             if not firmware_files:
@@ -214,6 +258,18 @@ class MainWindow(QMainWindow):
         auto_mode = kwargs.get("auto_mode", False)
         mode_display = "Automatic" if auto_mode else "Manual"
         self.dashboard_tab.update_mode(device_type, mode_display)
+
+        # If ESP32 automatic mode, change button to "Stop" state and re-enable it
+        if device_type == "ESP32" and auto_mode:
+            self.esp32_tab.set_upload_button_uploading()
+            # Re-enable upload button for automatic mode (so user can click to stop)
+            self.esp32_tab.upload_btn.setEnabled(True)
+
+        # If STM32 automatic mode, change button to "Stop" state and re-enable it
+        if device_type == "STM32" and auto_mode:
+            self.stm32_tab.set_upload_button_uploading()
+            # Re-enable upload button for automatic mode (so user can click to stop)
+            self.stm32_tab.upload_btn.setEnabled(True)
 
         thread.start()
 
@@ -340,6 +396,30 @@ class MainWindow(QMainWindow):
                     self.settings_manager.save_settings()
                 return  # Don't add this to log
 
+        # Handle special background color messages (for automatic mode)
+        if message.startswith("BACKGROUND:"):
+            if message == "BACKGROUND:RESET":
+                # Reset to default background color (new MCU connected)
+                if device_type == "STM32":
+                    self.stm32_tab.set_log_background_color("")  # Empty string = default
+                elif device_type == "ESP32":
+                    self.esp32_tab.set_log_background_color("")  # Empty string = default
+                return  # Don't add this to log
+            elif message == "BACKGROUND:SUCCESS":
+                # Set SUCCESS background color (dark green)
+                if device_type == "STM32":
+                    self.stm32_tab.set_log_background_color("#1b4332")
+                elif device_type == "ESP32":
+                    self.esp32_tab.set_log_background_color("#1b4332")
+                return  # Don't add this to log
+            elif message == "BACKGROUND:FAILURE":
+                # Set FAILURE background color (dark red)
+                if device_type == "STM32":
+                    self.stm32_tab.set_log_background_color("#6a040f")
+                elif device_type == "ESP32":
+                    self.esp32_tab.set_log_background_color("#6a040f")
+                return  # Don't add this to log
+
         self.append_log(message, device_type)
 
     def on_upload_finished(
@@ -361,9 +441,14 @@ class MainWindow(QMainWindow):
             tab.set_upload_enabled(True)
 
         # Update dashboard with final status
-        if success:
+        if success == 2:
+            # Stopped by user (status code 2)
+            self.dashboard_tab.update_status(device_type, "Stopped", "#ff9800")  # Orange
+        elif success:
+            # Success (status code 1 or True)
             self.dashboard_tab.update_status(device_type, "Success", "#27ae60")
         else:
+            # Failure (status code 0 or False)
             self.dashboard_tab.update_status(device_type, "Failed", "#e74c3c")
 
         # Set dashboard progress bar to 100% (stop animation, keep visible)
@@ -372,7 +457,17 @@ class MainWindow(QMainWindow):
         # Refresh dashboard statistics
         self.dashboard_tab.update_statistics(device_type)
 
-        if success:
+        if success == 2:
+            # Stopped by user - don't increment counters
+            # Note: "Automatic mode stopped by user" message already sent by uploader
+
+            # Set STOPPED background color (dark orange)
+            if device_type == "STM32":
+                self.stm32_tab.set_log_background_color("#4a3000")
+            elif device_type == "ESP32":
+                self.esp32_tab.set_log_background_color("#4a3000")
+
+        elif success == 1 or success == True:
             self.append_log("Upload completed successfully!", device_type)
 
             # Increment PASS counter
@@ -428,8 +523,12 @@ class MainWindow(QMainWindow):
         # Update status
         if device_type == "STM32":
             self.stm32_tab.update_status("Ready")
+            # Restore upload button to ready state (for automatic mode)
+            self.stm32_tab.set_upload_button_ready()
         elif device_type == "ESP32":
             self.esp32_tab.update_status("Ready")
+            # Restore upload button to ready state (for automatic mode)
+            self.esp32_tab.set_upload_button_ready()
 
     def erase_flash(self, device_type: str):
         """Erase flash for the specified device type."""

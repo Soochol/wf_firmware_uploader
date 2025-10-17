@@ -8,8 +8,8 @@ class UploadWorkerThread(QThread):
 
     progress_update = Signal(str, str)  # device_type, message
     upload_finished = Signal(
-        str, bool, list, bool
-    )  # device_type, success, corrected_files, was_fixed
+        str, object, list, bool
+    )  # device_type, success (int or bool: 0=fail, 1=success, 2=stopped, True, False), corrected_files, was_fixed
 
     def __init__(self, device_type, uploader, full_erase=False, erase_only=False, **kwargs):
         """Initialize worker thread."""
@@ -69,13 +69,21 @@ class UploadWorkerThread(QThread):
                     )
                     if isinstance(result, tuple) and len(result) == 3:
                         success, corrected_files, was_fixed = result
+                    elif isinstance(result, int):
+                        # Status code from automatic mode (0=fail, 1=success, 2=stopped)
+                        success = result
                     else:
                         success = result
                 else:
-                    # STM32 doesn't support full_erase parameter in auto mode yet
-                    success = self.uploader.upload_firmware(
+                    # STM32 automatic mode
+                    result = self.uploader.upload_firmware(
                         progress_callback=progress_callback, **self.kwargs
                     )
+                    # Handle status code (0=fail, 1=success, 2=stopped)
+                    if isinstance(result, int):
+                        success = result
+                    else:
+                        success = result
 
             else:
                 # Traditional workflow: erase first (if requested), then upload
