@@ -1,10 +1,18 @@
 """ESP32 firmware upload module."""
 
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Optional
+
+# Windows: Hide console window for subprocess calls
+# Prevents CMD windows from flashing when calling esptool
+if platform.system() == "Windows":
+    CREATE_NO_WINDOW = 0x08000000  # subprocess.CREATE_NO_WINDOW
+else:
+    CREATE_NO_WINDOW = 0  # Not needed on Linux/Mac
 
 
 class ESP32Uploader:
@@ -431,8 +439,10 @@ class ESP32Uploader:
                 # Send special status message to show RESET button guidance
                 progress_callback("STATUS:PUSH_RESET")
 
-            cmd = [sys.executable, "-m", "esptool", "--port", port, "chip_id"]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+            # Use esptool directly instead of sys.executable
+            # In PyInstaller, sys.executable points to the EXE itself, causing new GUI windows!
+            cmd = ["esptool.py", "--port", port, "chip_id"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False, creationflags=CREATE_NO_WINDOW)
 
             if result.returncode == 0:
                 # Parse chip information from output
@@ -488,12 +498,14 @@ class ESP32Uploader:
     def is_esptool_available(self) -> bool:
         """Check if esptool is installed."""
         try:
+            # Try to run esptool.py directly (works in both dev and PyInstaller)
             result = subprocess.run(
-                [sys.executable, "-c", "import esptool"],
+                ["esptool.py", "version"],
                 capture_output=True,
                 text=True,
                 timeout=5,
                 check=False,
+                creationflags=CREATE_NO_WINDOW,
             )
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -512,9 +524,10 @@ class ESP32Uploader:
             if progress_callback:
                 progress_callback(f"Querying chip info on {port}...")
 
-            cmd = [sys.executable, "-m", "esptool", "--port", port, "chip_id"]
+            # Use esptool directly (not sys.executable which points to EXE in PyInstaller!)
+            cmd = ["esptool.py", "--port", port, "chip_id"]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False, creationflags=CREATE_NO_WINDOW)
 
             if result.returncode == 0:
                 info = {}
@@ -689,10 +702,9 @@ class ESP32Uploader:
         connect_attempts: int = 1,
     ) -> bool:
         """Upload firmware with automatic reset control (original method)."""
+        # Use esptool directly (not sys.executable which is the EXE in PyInstaller!)
         cmd = [
-            sys.executable,
-            "-m",
-            "esptool",
+            "esptool.py",
             "--chip",
             chip,
             "--port",
@@ -764,6 +776,7 @@ class ESP32Uploader:
                 stderr=subprocess.STDOUT,
                 text=False,  # Binary mode for unbuffered output
                 bufsize=0,   # Unbuffered - get output immediately
+                creationflags=CREATE_NO_WINDOW,
             )
 
             output_buffer = ""
@@ -873,10 +886,9 @@ class ESP32Uploader:
                 # Use lower baud rate on retry attempts
                 current_baud = baud_rate if attempt == 0 else min(115200, baud_rate)
 
+                # Use esptool directly (sys.executable = EXE in PyInstaller!)
                 cmd = [
-                    sys.executable,
-                    "-m",
-                    "esptool",
+                    "esptool.py",
                     "--chip",
                     chip,
                     "--port",
@@ -916,6 +928,7 @@ class ESP32Uploader:
                     text=True,
                     bufsize=1,
                     universal_newlines=True,
+                    creationflags=CREATE_NO_WINDOW,
                 )
 
                 # Read output in real-time
@@ -988,9 +1001,10 @@ class ESP32Uploader:
             return None
 
         try:
-            cmd = [sys.executable, "-m", "esptool", "--chip", chip, "--port", port, "flash_id"]
+            # Use esptool directly (sys.executable = EXE in PyInstaller!)
+            cmd = ["esptool.py", "--chip", chip, "--port", port, "flash_id"]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False, creationflags=CREATE_NO_WINDOW)
 
             if result.returncode == 0:
                 info = {}

@@ -15,6 +15,13 @@ if platform.system() == "Windows":
 else:
     WINREG = None  # type: ignore
 
+# Windows: Hide console window for subprocess calls
+# Prevents CMD windows from flashing when calling STM32_Programmer_CLI
+if platform.system() == "Windows":
+    CREATE_NO_WINDOW = 0x08000000  # subprocess.CREATE_NO_WINDOW
+else:
+    CREATE_NO_WINDOW = 0  # Not needed on Linux/Mac
+
 
 class STM32Uploader:
     """Class responsible for STM32 firmware upload."""
@@ -86,6 +93,7 @@ class STM32Uploader:
                 text=True,
                 timeout=10,
                 check=False,
+                creationflags=CREATE_NO_WINDOW,
             )
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -109,7 +117,7 @@ class STM32Uploader:
             if port:
                 cmd[2] = f"port={port}"
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False, creationflags=CREATE_NO_WINDOW)
 
             if result.returncode == 0:
                 info: Dict[str, Any] = {"connected": True}
@@ -302,7 +310,8 @@ class STM32Uploader:
                         capture_output=True,
                         text=True,
                         timeout=1,
-                        check=False
+                        check=False,
+                        creationflags=CREATE_NO_WINDOW,
                     )
 
                     # Check if connected
@@ -424,7 +433,7 @@ class STM32Uploader:
                 # Windows: Use taskkill
                 cmd = ["taskkill", "/F", "/IM", "STM32_Programmer_CLI.exe", "/T"]
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=3, check=False
+                    cmd, capture_output=True, text=True, timeout=3, check=False, creationflags=CREATE_NO_WINDOW
                 )
 
                 if "SUCCESS" in result.stdout or "not found" in result.stderr.lower():
@@ -434,7 +443,7 @@ class STM32Uploader:
             else:
                 # Linux/Mac: Use pkill
                 cmd = ["pkill", "-9", "STM32_Programmer"]
-                subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
+                subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False, creationflags=CREATE_NO_WINDOW)
 
                 if progress_callback:
                     progress_callback("Terminated lingering programmer processes")
@@ -472,7 +481,7 @@ class STM32Uploader:
             ]
 
             result = subprocess.run(
-                reset_cmd, capture_output=True, text=True, timeout=5, check=False
+                reset_cmd, capture_output=True, text=True, timeout=5, check=False, creationflags=CREATE_NO_WINDOW
             )
 
             # Wait for hardware to settle
@@ -491,7 +500,7 @@ class STM32Uploader:
 
             # Run with very short timeout to force quick exit
             try:
-                subprocess.run(disconnect_cmd, capture_output=True, text=True, timeout=1, check=False)
+                subprocess.run(disconnect_cmd, capture_output=True, text=True, timeout=1, check=False, creationflags=CREATE_NO_WINDOW)
             except subprocess.TimeoutExpired:
                 pass  # Timeout is expected and desired
 
@@ -521,6 +530,7 @@ class STM32Uploader:
                 universal_newlines=True,
                 encoding="utf-8",
                 errors="ignore",  # Ignore encoding errors
+                creationflags=CREATE_NO_WINDOW,
             )
 
             while True:
@@ -613,7 +623,7 @@ class STM32Uploader:
                 if baud_rate != 921600:
                     progress_callback(f"Note: STM32 ignores baud rate setting ({baud_rate})")
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False, creationflags=CREATE_NO_WINDOW)
 
             if result.returncode == 0:
                 if progress_callback:

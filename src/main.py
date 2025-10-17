@@ -81,10 +81,28 @@ def main():
     print(f"Platform: {platform_type}, Scale Factor: {scale_factor}")
 
     window = MainWindow()
-    window.show()
+    window.showMaximized()  # Start maximized
 
     return app.exec()
 
 
 if __name__ == "__main__":
+    # CRITICAL: PyInstaller multiprocessing support
+    # Without this, subprocess calls (esptool.py, STM32_Programmer_CLI.exe)
+    # will cause PyInstaller to spawn NEW GUI windows instead of child processes!
+    import multiprocessing
+    import sys
+
+    # IMPORTANT: freeze_support() must be called BEFORE any other code
+    # This prevents PyInstaller from re-executing the main script when spawning subprocesses
+    multiprocessing.freeze_support()
+
+    # Check if this is a child process spawned by multiprocessing
+    # If so, DO NOT start the GUI - just exit immediately
+    # This prevents the bug where subprocess calls open new GUI windows
+    if len(sys.argv) > 1 and sys.argv[1].startswith('--multiprocessing'):
+        # This is a multiprocessing child process, not the main GUI
+        sys.exit(0)
+
+    # Only start GUI if this is the actual main process (not a subprocess)
     sys.exit(main())
