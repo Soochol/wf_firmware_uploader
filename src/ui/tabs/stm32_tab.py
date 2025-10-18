@@ -42,14 +42,12 @@ class STM32Tab(QWidget):
 
     def init_ui(self):
         """Initialize UI."""
-        # Set 10pt font for all widgets except log widgets
+        # Set 10pt font for all widgets in this tab
+        # Note: Log widgets override this with their own specific styles
         self.setStyleSheet(
             """
-            QLabel:not(.log-widget),
-            QPushButton:not(.log-widget),
-            QRadioButton, QCheckBox,
-            QGroupBox:not(.log-group),
-            QComboBox, QLineEdit {
+            QLabel, QPushButton, QRadioButton, QCheckBox,
+            QGroupBox, QComboBox, QLineEdit {
                 font-size: 10pt;
             }
         """

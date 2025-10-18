@@ -538,12 +538,16 @@ class MainWindow(QMainWindow):
             # Clear STM32 log before erasing
             self.stm32_tab.clear_log()
             port = tab.get_selected_port()
+
+            # Get STM32 connection settings for erase
+            stm32_connection_settings = tab.get_stm32_connection_settings()
         else:  # ESP32
             tab = self.esp32_tab
             uploader = self.esp32_uploader
             # Clear ESP32 log before erasing
             self.esp32_tab.clear_log()
             port = tab.get_selected_port()
+            stm32_connection_settings = {}
 
         if not port:
             msg = QMessageBox(self)
@@ -558,6 +562,8 @@ class MainWindow(QMainWindow):
 
         # Create erase worker thread (erase only, no upload)
         kwargs = {"port": port}
+        if device_type == "STM32":
+            kwargs.update(stm32_connection_settings)
         thread = UploadWorkerThread(device_type, uploader, erase_only=True, **kwargs)
         thread.progress_update.connect(self.on_progress_update)
         thread.upload_finished.connect(self.on_erase_finished)

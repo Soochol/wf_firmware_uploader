@@ -9,6 +9,16 @@ block_cipher = None
 # Get the project root directory
 project_root = Path(SPECPATH)
 
+# Get esptool package location for including stub flasher files
+try:
+    import esptool
+    esptool_path = Path(esptool.__file__).parent
+except ImportError:
+    esptool_path = None
+
+# Configure output directory to build/application
+DISTPATH = str(project_root / 'build' / 'application')
+
 a = Analysis(
     ['src/main.py'],
     pathex=[str(project_root / 'src')],
@@ -19,7 +29,10 @@ a = Analysis(
         (str(project_root / 'firmwares' / 'esp32' / 'partitions.bin'), 'firmwares/esp32'),
         (str(project_root / 'firmwares' / 'esp32' / 'firmware.bin'), 'firmwares/esp32'),
         (str(project_root / 'firmwares' / 'stm32' / 'WithForce_1.00.34.hex'), 'firmwares/stm32'),
-    ],
+    ] + (
+        # Include esptool stub flasher JSON files (required for ESP32 programming)
+        [(str(esptool_path / 'targets'), 'esptool/targets')] if esptool_path else []
+    ),
     hiddenimports=[
         'PySide6.QtCore',
         'PySide6.QtGui',
@@ -28,6 +41,7 @@ a = Analysis(
         'serial.tools',
         'serial.tools.list_ports',
         'esptool',
+        'esptool.__main__',  # Required for runpy.run_module() to work with esptool
     ],
     hookspath=[],
     hooksconfig={},
@@ -68,4 +82,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,  # Add icon file path here if you have one
+    distpath=DISTPATH,  # Output to build/application directory
 )

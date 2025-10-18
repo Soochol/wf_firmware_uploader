@@ -173,8 +173,64 @@ class STM32Uploader:
             )
 
         try:
+            import time
+
             # Build command with configurable options
             for attempt in range(retry_attempts):
+                # Pre-connection check - wait for MCU to be ready
+                # This gives the user time to connect the MCU if not already connected
+                # Works for all modes: HOTPLUG, UR (Under Reset), Normal
+                if attempt == 0:
+                    if progress_callback:
+                        progress_callback(f"{connection_mode} mode: Checking for MCU connection...")
+                        progress_callback("If MCU is not connected, please connect and power it on now")
+                        progress_callback("Waiting up to 15 seconds for MCU connection...")
+
+                    # Poll for MCU connection with timeout
+                    connection_timeout = 15  # seconds
+                    poll_interval = 0.5  # seconds
+                    max_polls = int(connection_timeout / poll_interval)
+
+                    mcu_connected = False
+                    for poll in range(max_polls):
+                        # Quick connection check
+                        check_cmd = [
+                            self.stm32_programmer_cli,
+                            "-c",
+                            f"port={port}",
+                            "-c",
+                            f"mode={connection_mode}",
+                            "-c",
+                            f"freq={connection_speed}",
+                        ]
+
+                        try:
+                            result = subprocess.run(
+                                check_cmd,
+                                capture_output=True,
+                                text=True,
+                                timeout=2,
+                                check=False,
+                                creationflags=CREATE_NO_WINDOW,
+                            )
+
+                            if result.returncode == 0:
+                                mcu_connected = True
+                                if progress_callback:
+                                    progress_callback(f"MCU detected after {poll * poll_interval:.1f} seconds!")
+                                break
+                        except subprocess.TimeoutExpired:
+                            pass
+
+                        # Don't spam progress messages
+                        if poll % 4 == 0 and poll > 0 and progress_callback:
+                            progress_callback(f"Still waiting... ({poll * poll_interval:.0f}s/{connection_timeout}s)")
+
+                        time.sleep(poll_interval)
+
+                    if not mcu_connected and progress_callback:
+                        progress_callback("Warning: MCU not detected yet, attempting upload anyway...")
+
                 cmd = [
                     self.stm32_programmer_cli,
                     "-c",
@@ -232,10 +288,11 @@ class STM32Uploader:
                     return True
                 elif attempt < retry_attempts - 1:
                     if progress_callback:
-                        progress_callback(f"Upload failed, retrying... ({attempt + 1}/{retry_attempts})")
+                        progress_callback(
+                            f"Upload failed, retrying... ({attempt + 1}/{retry_attempts})"
+                        )
                     # Wait a bit before retry
-                    import time
-                    time.sleep(0.5)
+                    time.sleep(1.0)  # Give MCU time to reset/reconnect
 
             # All attempts failed
             return False
@@ -598,6 +655,8 @@ class STM32Uploader:
         no_sync: bool = False,
         connect_attempts: int = 1,
         progress_callback: Optional[Callable[[str], None]] = None,
+        connection_mode: str = "HOTPLUG",
+        connection_speed: int = 4000,
     ) -> bool:
         """Erase STM32 flash.
 
@@ -608,12 +667,67 @@ class STM32Uploader:
             return False
 
         try:
+            import time
+
+            # Pre-connection check - wait for MCU to be ready
+            # Same logic as upload_firmware to ensure MCU is connected
+            # Works for all modes: HOTPLUG, UR (Under Reset), Normal
+            if progress_callback:
+                progress_callback(f"{connection_mode} mode: Checking for MCU connection...")
+                progress_callback("If MCU is not connected, please connect and power it on now")
+                progress_callback("Waiting up to 15 seconds for MCU connection...")
+
+            # Poll for MCU connection with timeout
+            connection_timeout = 15  # seconds
+            poll_interval = 0.5  # seconds
+            max_polls = int(connection_timeout / poll_interval)
+
+            mcu_connected = False
+            for poll in range(max_polls):
+                # Quick connection check
+                check_cmd = [
+                    self.stm32_programmer_cli,
+                    "-c",
+                    f"port={port}",
+                    "-c",
+                    f"mode={connection_mode}",
+                    "-c",
+                    f"freq={connection_speed}",
+                ]
+
+                try:
+                    result = subprocess.run(
+                        check_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                        check=False,
+                        creationflags=CREATE_NO_WINDOW,
+                    )
+
+                    if result.returncode == 0:
+                        mcu_connected = True
+                        if progress_callback:
+                            progress_callback(f"MCU detected after {poll * poll_interval:.1f} seconds!")
+                        break
+                except subprocess.TimeoutExpired:
+                    pass
+
+                # Don't spam progress messages
+                if poll % 4 == 0 and poll > 0 and progress_callback:
+                    progress_callback(f"Still waiting... ({poll * poll_interval:.0f}s/{connection_timeout}s)")
+
+                time.sleep(poll_interval)
+
+            if not mcu_connected and progress_callback:
+                progress_callback("Warning: MCU not detected yet, attempting erase anyway...")
+
             cmd = [
                 self.stm32_programmer_cli,
                 "-c",
                 f"port={port}",
                 "-c",
-                "mode=HOTPLUG",
+                f"mode={connection_mode}",
                 "-e",
                 "all",
             ]
