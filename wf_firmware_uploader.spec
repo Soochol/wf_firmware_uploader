@@ -24,11 +24,9 @@ a = Analysis(
     pathex=[str(project_root / 'src')],
     binaries=[],
     datas=[
-        # Firmware files for ESP32 and STM32
-        (str(project_root / 'firmwares' / 'esp32' / 'bootloader.bin'), 'firmwares/esp32'),
-        (str(project_root / 'firmwares' / 'esp32' / 'partitions.bin'), 'firmwares/esp32'),
-        (str(project_root / 'firmwares' / 'esp32' / 'firmware.bin'), 'firmwares/esp32'),
-        (str(project_root / 'firmwares' / 'stm32' / 'WithForce_1.00.34.hex'), 'firmwares/stm32'),
+        # Include ALL firmware files from firmwares folder
+        (str(project_root / 'firmwares' / 'esp32'), 'firmwares/esp32'),
+        (str(project_root / 'firmwares' / 'stm32'), 'firmwares/stm32'),
     ] + (
         # Include esptool stub flasher JSON files (required for ESP32 programming)
         [(str(esptool_path / 'targets'), 'esptool/targets')] if esptool_path else []
@@ -81,6 +79,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # Add icon file path here if you have one
-    distpath=DISTPATH,  # Output to build/application directory
+    icon=str(project_root / 'assets' / 'icon.ico'),
 )
